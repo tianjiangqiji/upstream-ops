@@ -19,6 +19,7 @@ import (
 )
 
 func registerChannels(g *gin.RouterGroup, d *Deps) {
+	g.GET("/connector-plugins", func(c *gin.Context) { listConnectorPlugins(c) })
 	gp := g.Group("/channels")
 	gp.GET("", func(c *gin.Context) { listChannels(c, d) })
 	gp.POST("", func(c *gin.Context) { createChannel(c, d) })
@@ -49,6 +50,11 @@ func registerChannels(g *gin.RouterGroup, d *Deps) {
 	gp.GET("/:id/balance-history", func(c *gin.Context) { balanceHistory(c, d) })
 }
 
+// listConnectorPlugins 返回编译期注册的渠道插件清单与能力声明，前端据此动态渲染表单与操作入口。
+func listConnectorPlugins(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"data": connector.Plugins()})
+}
+
 type channelInput struct {
 	Name                   string                 `json:"name" binding:"required"`
 	Type                   storage.ChannelType    `json:"type" binding:"required"`
@@ -69,6 +75,7 @@ type channelInput struct {
 	RechargeMultiplierMode string                 `json:"recharge_multiplier_mode"`
 	MonitorEnabled         bool                   `json:"monitor_enabled"`
 	OnlyCreatedKeyGroupsEnabled bool             `json:"only_created_key_groups_enabled"`
+	SkipRatesOnAutoRefresh bool                   `json:"skip_rates_on_auto_refresh"`
 	Tags                   []string               `json:"tags"`
 	Notes                  string                 `json:"notes"`
 }
@@ -92,6 +99,7 @@ type channelUpdateInput struct {
 	RechargeMultiplierMode *string                 `json:"recharge_multiplier_mode"`
 	MonitorEnabled         *bool                   `json:"monitor_enabled"`
 	OnlyCreatedKeyGroupsEnabled *bool             `json:"only_created_key_groups_enabled"`
+	SkipRatesOnAutoRefresh *bool                   `json:"skip_rates_on_auto_refresh"`
 	Tags                   *[]string               `json:"tags"` // 省略或 null 表示不修改，[] 表示清空
 	Notes                  *string                 `json:"notes"`
 }
@@ -187,7 +195,7 @@ func createChannel(c *gin.Context, d *Deps) {
 		LoginExtraParams:       in.LoginExtraParams,
 		TurnstileEnabled:       in.TurnstileEnabled,
 		IgnoreAnnouncements:    in.IgnoreAnnouncements,
-		SubscriptionEnabled:    in.Type == storage.ChannelTypeSub2API && in.SubscriptionEnabled,
+		SubscriptionEnabled:    connector.HasCapability(connector.ChannelType(in.Type), connector.CapSubscription) && in.SubscriptionEnabled,
 		ProxyEnabled:           in.ProxyEnabled,
 		CaptchaConfigID:        in.CaptchaConfigID,
 		BalanceThreshold:       in.BalanceThreshold,
@@ -195,6 +203,7 @@ func createChannel(c *gin.Context, d *Deps) {
 		RechargeMultiplierMode: in.RechargeMultiplierMode,
 		MonitorEnabled:         in.MonitorEnabled,
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
+		SkipRatesOnAutoRefresh: in.SkipRatesOnAutoRefresh,
 		Tags:                   tags,
 		Notes:                  notes,
 	})
@@ -253,17 +262,15 @@ func channelOutputAt(d *Deps, ch storage.Channel, now time.Time) channelOutput {
 }
 
 func channelUserID(d *Deps, ch *storage.Channel) string {
-	if d == nil || ch == nil || ch.Type != storage.ChannelTypeNewAPI {
+	if d == nil || ch == nil {
 		return ""
 	}
 	if ch.CredentialMode == storage.CredentialModeToken && d.Cipher != nil && ch.PasswordCipher != "" {
 		raw, err := d.Cipher.Decrypt(ch.PasswordCipher)
 		if err == nil {
-			var cred channel.NewAPITokenCredential
-			if json.Unmarshal([]byte(raw), &cred) == nil {
-				if userID := strings.TrimSpace(cred.UserID); userID != "" {
-					return userID
-				}
+			// 由插件声明的 target=user_id 字段统一取值，新增插件无需改这里。
+			if userID := connector.TokenCredentialValue(connector.ChannelType(ch.Type), raw, "user_id"); userID != "" {
+				return userID
 			}
 		}
 	}
@@ -326,7 +333,7 @@ func updateChannel(c *gin.Context, d *Deps) {
 			fail(c, http.StatusNotFound, err)
 			return
 		}
-		enabled := current.Type == storage.ChannelTypeSub2API && *subscriptionEnabled
+		enabled := connector.HasCapability(connector.ChannelType(current.Type), connector.CapSubscription) && *subscriptionEnabled
 		subscriptionEnabled = &enabled
 	}
 	updated, err := d.ChannelSvc.Update(id, channel.UpdateInput{
@@ -348,6 +355,7 @@ func updateChannel(c *gin.Context, d *Deps) {
 		RechargeMultiplierMode: in.RechargeMultiplierMode,
 		MonitorEnabled:         in.MonitorEnabled,
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
+		SkipRatesOnAutoRefresh: in.SkipRatesOnAutoRefresh,
 		Tags:                   tags,
 		Notes:                  notes,
 	})
@@ -926,7 +934,14 @@ func syncChannel(c *gin.Context, d *Deps) {
 	if balErr == nil {
 		subErr = d.Monitor.CheckSubscriptionUsageAlerts(ctx, ch)
 	}
-	rateErr := d.Monitor.RefreshRates(ctx, ch)
+	// 渠道开了「定时刷新只取额度、不取分组倍率」时，手动"同步"同样不碰分组倍率：
+	// 分组倍率与挂在同一条链路上的公告同步一并跳过，只更新余额 / 消费 / 订阅用量。
+	var rateErr error
+	if ch.SkipRatesOnAutoRefresh {
+		progress.OK(ctx, progress.StageRates, "已按渠道开关跳过分组倍率采集")
+	} else {
+		rateErr = d.Monitor.RefreshRates(ctx, ch)
+	}
 
 	switch {
 	case balErr != nil || subErr != nil || rateErr != nil:

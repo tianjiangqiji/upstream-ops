@@ -19,7 +19,46 @@ import (
 )
 
 func init() {
-	connector.Register(connector.TypeSub2API, func() connector.Connector { return New() })
+	connector.RegisterPlugin(connector.Plugin{
+		Descriptor: connector.PluginDescriptor{
+			Type:        connector.TypeSub2API,
+			Name:        "Sub2API",
+			Description: "Sub2API 及兼容分支（订阅 / 充值 / 密钥管理）",
+			Capabilities: []connector.Capability{
+				connector.CapLogin,
+				connector.CapTokenCredential,
+				connector.CapTurnstile,
+				connector.CapLoginExtraParams,
+				connector.CapBalance,
+				connector.CapCosts,
+				connector.CapRates,
+				connector.CapAnnouncements,
+				connector.CapRedeem,
+				connector.CapRecharge,
+				connector.CapSubscription,
+				connector.CapSubscriptionUsage,
+				connector.CapAPIKeys,
+			},
+			TokenFields: []connector.TokenField{
+				{
+					Key:      "access_token",
+					Label:    "Access Token",
+					Required: true,
+					Secret:   true,
+					Target:   "access_token",
+				},
+				{
+					Key:    "refresh_token",
+					Label:  "Refresh Token",
+					Help:   "建议填写，用于后续续期",
+					Secret: true,
+					Target: "refresh_token",
+				},
+			},
+			TokenHint: "至少填写 Access Token",
+		},
+		Factory: func() connector.Connector { return New() },
+	})
 }
 
 type Client struct {

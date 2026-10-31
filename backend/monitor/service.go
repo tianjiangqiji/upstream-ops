@@ -66,6 +66,10 @@ func (s *Service) ScanAllBalances(ctx context.Context) {
 }
 
 // ScanAllRates 扫描所有启用监控的渠道倍率。
+//
+// 渠道开了「不采集分组倍率」（Channel.SkipRatesOnAutoRefresh）时整条跳过：一个上游
+// 请求都不发，只靠 balanceCron 的余额 / 消费刷新保持额度数据。卡片上的"同步"在
+// handler 层读同一个开关，跳过语义保持一致。
 func (s *Service) ScanAllRates(ctx context.Context) {
 	list, err := s.channels.ListMonitorEnabled()
 	if err != nil {
@@ -75,6 +79,9 @@ func (s *Service) ScanAllRates(ctx context.Context) {
 	batch := notify.RateNotificationBatch{}
 	for i := range list {
 		c := list[i]
+		if c.SkipRatesOnAutoRefresh {
+			continue
+		}
 		if err := s.refreshRates(ctx, &c, &batch); err != nil {
 			s.log.Warn("refresh rates failed", "channel", c.Name, "err", err)
 		}
@@ -157,7 +164,9 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 	return nil
 }
 
-// RefreshRates 单个渠道倍率刷新，可被 API 手动触发。
+// RefreshRates 单个渠道倍率刷新。调用方负责决定是否该拉：
+// 定时扫描与卡片"同步"都先看 Channel.SkipRatesOnAutoRefresh，只有显式的
+// POST /channels/:id/refresh-rates 会无条件走到这里。
 func (s *Service) RefreshRates(ctx context.Context, c *storage.Channel) error {
 	batch := notify.RateNotificationBatch{}
 	if err := s.refreshRates(ctx, c, &batch); err != nil {
@@ -327,7 +336,8 @@ func (s *Service) refreshRates(ctx context.Context, c *storage.Channel, batch *n
 }
 
 func (s *Service) CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.Channel) error {
-	if c == nil || !c.MonitorEnabled || !c.SubscriptionEnabled || c.Type != storage.ChannelTypeSub2API {
+	if c == nil || !c.MonitorEnabled || !c.SubscriptionEnabled ||
+		!connector.HasCapability(connector.ChannelType(c.Type), connector.CapSubscriptionUsage) {
 		return nil
 	}
 	policy := s.dispatcher.Policy()

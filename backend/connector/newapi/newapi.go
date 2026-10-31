@@ -21,7 +21,63 @@ import (
 )
 
 func init() {
-	connector.Register(connector.TypeNewAPI, func() connector.Connector { return New() })
+	connector.RegisterPlugin(connector.Plugin{
+		Descriptor: connector.PluginDescriptor{
+			Type:        connector.TypeNewAPI,
+			Name:        "NewAPI",
+			Description: "NewAPI 及兼容分支（one-api / new-api）",
+			Capabilities: []connector.Capability{
+				connector.CapLogin,
+				connector.CapTokenCredential,
+				connector.CapTurnstile,
+				connector.CapLoginExtraParams,
+				connector.CapBalance,
+				connector.CapCosts,
+				connector.CapRates,
+				connector.CapAnnouncements,
+				connector.CapRedeem,
+				connector.CapRecharge,
+				connector.CapAPIKeys,
+			},
+			TokenFields: []connector.TokenField{
+				{
+					Key:         "cookie",
+					Label:       "Cookie",
+					Placeholder: "session=...; ...",
+					Help:        "浏览器登录后的整段 Cookie",
+					Secret:      true,
+					Target:      "cookie",
+					OneOf:       "auth",
+				},
+				{
+					Key:    "access_token",
+					Label:  "系统访问令牌",
+					Help:   "NewAPI 个人设置页生成的「系统访问令牌」，请求走 Authorization 头",
+					Secret: true,
+					Target: "access_token",
+					OneOf:  "auth",
+				},
+				{
+					Key:         "user_id",
+					Label:       "User ID",
+					Placeholder: "整数，个人设置页可见",
+					Required:    true,
+					Target:      "user_id",
+				},
+			},
+			TokenHint: "Cookie 与系统访问令牌二选一，并填写 User ID",
+		},
+		Factory:       func() connector.Connector { return New() },
+		ValidateToken: validateToken,
+	})
+}
+
+// validateToken 保住 NewAPI 原有的互斥约束：Cookie 与系统访问令牌只能填一个。
+func validateToken(values map[string]string) error {
+	if values["cookie"] != "" && values["access_token"] != "" {
+		return errors.New("Cookie 与系统访问令牌只能填写一个")
+	}
+	return nil
 }
 
 // newAPIRefreshCookieName 新版 NewAPI 登录 / 刷新接口用于承载刷新令牌的 Cookie 名称。
@@ -380,28 +436,82 @@ func (c *Client) GetRates(ctx context.Context, ch *connector.Channel, session *c
 	if err != nil {
 		return nil, fmt.Errorf("newapi groups: %w", err)
 	}
-	// data: { "default": { "ratio": 1, "desc": "..." }, "auto": { "ratio": "自动", ... } }
-	raw := map[string]struct {
-		Ratio json.RawMessage `json:"ratio"`
-		Desc  string          `json:"desc"`
-	}{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	entries, err := decodeNewAPIGroups(body)
+	if err != nil {
 		return nil, fmt.Errorf("newapi groups decode: %w", err)
 	}
-	out := make([]connector.RateResult, 0, len(raw))
-	for name, v := range raw {
-		var ratio float64
-		if err := json.Unmarshal(v.Ratio, &ratio); err != nil {
-			// "auto" 组的 ratio 是字符串 "自动"，跳过。
-			continue
-		}
+	out := make([]connector.RateResult, 0, len(entries))
+	for _, e := range entries {
 		out = append(out, connector.RateResult{
-			ModelName:   name,
-			Description: v.Desc,
-			Ratio:       ratio,
+			ModelName:   e.Name,
+			Description: e.Description,
+			Ratio:       e.Ratio,
 		})
 	}
 	return out, nil
+}
+
+// newAPIGroupEntry 一个分组的解析结果。Name 是分组 key，Ratio 是倍率。
+type newAPIGroupEntry struct {
+	Name        string
+	Description string
+	Ratio       float64
+}
+
+// decodeNewAPIGroups 解析 /api/user/self/groups 的 data 段。
+//
+// 各 NewAPI 派生站点这一段形状并不统一，实测至少三种：
+//  1. {"default": {"ratio": 1, "desc": "默认"}, "auto": {"ratio": "自动"}}
+//  2. {"default": 1.25, "vip": 0.8}   —— 值直接是倍率
+//  3. {"default": "1.25"}             —— 倍率写成字符串
+//
+// 因此逐条按 RawMessage 解析：单条形状不认识只跳过该条，不让整批采集失败
+// （早先直接 unmarshal 到结构体会因为某个值是字符串而整体报错）。
+func decodeNewAPIGroups(body []byte) ([]newAPIGroupEntry, error) {
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]newAPIGroupEntry, 0, len(raw))
+	for name, value := range raw {
+		var obj struct {
+			Ratio json.RawMessage `json:"ratio"`
+			Desc  string          `json:"desc"`
+		}
+		if err := json.Unmarshal(value, &obj); err == nil {
+			ratio, ok := decodeNewAPIRatio(obj.Ratio)
+			if !ok {
+				// "auto" 组的 ratio 是字符串 "自动"，跳过。
+				continue
+			}
+			out = append(out, newAPIGroupEntry{Name: name, Description: obj.Desc, Ratio: ratio})
+			continue
+		}
+		// 值本身不是对象，按"值就是倍率"再试一次。
+		if ratio, ok := decodeNewAPIRatio(value); ok {
+			out = append(out, newAPIGroupEntry{Name: name, Ratio: ratio})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// decodeNewAPIRatio 把倍率字段解析成 float64：数字与 "1.25" 这类字符串都接受。
+func decodeNewAPIRatio(raw json.RawMessage) (float64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var num float64
+	if err := json.Unmarshal(raw, &num); err == nil {
+		return num, true
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(str), 64); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func (c *Client) GetAnnouncements(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.AnnouncementResult, error) {
@@ -1237,23 +1347,16 @@ func (c *Client) newAPIGroupMap(ctx context.Context, ch *connector.Channel, sess
 	if err != nil {
 		return nil, fmt.Errorf("newapi api key groups: %w", err)
 	}
-	raw := map[string]struct {
-		Ratio json.RawMessage `json:"ratio"`
-		Desc  string          `json:"desc"`
-	}{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	entries, err := decodeNewAPIGroups(body)
+	if err != nil {
 		return nil, fmt.Errorf("newapi api key groups decode: %w", err)
 	}
-	out := make(map[string]connector.APIKeyGroup, len(raw))
-	for name, v := range raw {
-		var ratio float64
-		if err := json.Unmarshal(v.Ratio, &ratio); err != nil {
-			continue
-		}
-		out[name] = connector.APIKeyGroup{
-			Name:        name,
-			Description: v.Desc,
-			Ratio:       ratio,
+	out := make(map[string]connector.APIKeyGroup, len(entries))
+	for _, e := range entries {
+		out[e.Name] = connector.APIKeyGroup{
+			Name:        e.Name,
+			Description: e.Description,
+			Ratio:       e.Ratio,
 		}
 	}
 	return out, nil

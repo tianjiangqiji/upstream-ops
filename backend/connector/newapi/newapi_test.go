@@ -957,3 +957,77 @@ func TestCreateAPIKeyFallsBackToListWhenSearchMisses(t *testing.T) {
 func strPtr(v string) *string {
 	return &v
 }
+
+// TestGetRatesToleratesMixedGroupShapes 覆盖各 NewAPI 派生站点 /api/user/self/groups
+// 返回值形状不一致的情况：值可能是对象、纯数字倍率、字符串倍率，甚至整条是字符串。
+// 早先整段 unmarshal 到结构体会因为某个值是字符串而整批采集失败。
+func TestGetRatesToleratesMixedGroupShapes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/user/self/groups", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"default":{"ratio":1.25,"desc":"默认分组"},"auto":{"ratio":"自动","desc":"跳过"},"vip":0.8,"svip":"0.65","broken":"oops"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rates, err := New().GetRates(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+		Cookie: "session=1",
+		UserID: "7",
+	})
+	if err != nil {
+		t.Fatalf("GetRates: %v", err)
+	}
+	got := map[string]float64{}
+	for _, r := range rates {
+		got[r.ModelName] = r.Ratio
+	}
+	want := map[string]float64{"default": 1.25, "vip": 0.8, "svip": 0.65}
+	if len(got) != len(want) {
+		t.Fatalf("rates = %#v, want %#v", got, want)
+	}
+	for name, ratio := range want {
+		if got[name] != ratio {
+			t.Fatalf("rate[%q] = %v, want %v", name, got[name], ratio)
+		}
+	}
+	for _, r := range rates {
+		if r.ModelName == "default" && r.Description != "默认分组" {
+			t.Fatalf("default desc = %q", r.Description)
+		}
+	}
+}
+
+// TestListAPIKeyGroupsToleratesMixedGroupShapes 与倍率共用同一份解析逻辑。
+func TestListAPIKeyGroupsToleratesMixedGroupShapes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/user/self/groups", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"default":{"ratio":1.25,"desc":"默认分组"},"vip":0.8,"svip":"0.65","broken":"oops"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	groups, err := New().ListAPIKeyGroups(context.Background(), &connector.Channel{SiteURL: srv.URL}, &connector.AuthSession{
+		Cookie: "session=1",
+		UserID: "7",
+	})
+	if err != nil {
+		t.Fatalf("ListAPIKeyGroups: %v", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("groups = %#v, want 3 entries", groups)
+	}
+}
+
+// TestDecodeNewAPIGroupsRejectsNonObject 顶层不是对象时仍应报错，避免上游返回
+// 错误页被当成"零个分组"悄悄吞掉。
+func TestDecodeNewAPIGroupsRejectsNonObject(t *testing.T) {
+	if _, err := decodeNewAPIGroups([]byte(`[1,2,3]`)); err == nil {
+		t.Fatal("expected error for array payload")
+	}
+	entries, err := decodeNewAPIGroups([]byte(`{"a":{"ratio":1},"b":null}`))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "a" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}

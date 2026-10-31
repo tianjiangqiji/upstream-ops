@@ -15,6 +15,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/connector"
 	_ "github.com/bejix/upstream-ops/backend/connector/newapi"
+	_ "github.com/bejix/upstream-ops/backend/connector/sub2api"
 	"github.com/bejix/upstream-ops/backend/crypto"
 	"github.com/bejix/upstream-ops/backend/storage"
 )

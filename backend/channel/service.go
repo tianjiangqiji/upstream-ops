@@ -166,6 +166,7 @@ type CreateInput struct {
 	RechargeMultiplierMode string
 	MonitorEnabled         bool
 	OnlyCreatedKeyGroupsEnabled bool
+	SkipRatesOnAutoRefresh bool
 	Tags                   []string
 	Notes                  string
 }
@@ -210,6 +211,7 @@ func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
 		RechargeMultiplierMode: connector.NormalizeRechargeMultiplierMode(in.RechargeMultiplierMode),
 		MonitorEnabled:         in.MonitorEnabled,
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
+		SkipRatesOnAutoRefresh: in.SkipRatesOnAutoRefresh,
 		Tags:                   storage.NormalizeChannelTags(in.Tags),
 		Notes:                  strings.TrimSpace(in.Notes),
 	}
@@ -243,6 +245,7 @@ type UpdateInput struct {
 	RechargeMultiplierMode *string
 	MonitorEnabled         *bool
 	OnlyCreatedKeyGroupsEnabled *bool
+	SkipRatesOnAutoRefresh *bool
 	Tags                   *[]string // nil 表示不修改；空切片表示清空
 	Notes                  *string
 }
@@ -359,6 +362,9 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
 	if in.OnlyCreatedKeyGroupsEnabled != nil {
 		c.OnlyCreatedKeyGroupsEnabled = *in.OnlyCreatedKeyGroupsEnabled
 	}
+	if in.SkipRatesOnAutoRefresh != nil {
+		c.SkipRatesOnAutoRefresh = *in.SkipRatesOnAutoRefresh
+	}
 	if in.Tags != nil {
 		c.Tags = storage.NormalizeChannelTags(*in.Tags)
 	}
@@ -433,43 +439,16 @@ func selectRawCredential(mode storage.CredentialMode, password, tokenCredential 
 	}
 }
 
-// validateCredential 在保存前对凭据做语法 / 必填字段校验，能尽早把无效输入挡在 connector 外。
+// validateCredential 在保存前对 token 凭据做语法 / 必填字段校验，能尽早把无效输入挡在 connector 外。
 //
+// 字段规则由插件注册的 TokenFields 提供，新增插件无需改动这里。
 // 注意：这里只做语法层校验，不做"凭据是否真的有效"的网络验证——
 // 那个交给后续 TestLogin / 第一次同步去发现。
 func validateCredential(channelType storage.ChannelType, mode storage.CredentialMode, raw string) error {
 	if mode != storage.CredentialModeToken {
 		return nil
 	}
-	switch channelType {
-	case storage.ChannelTypeNewAPI:
-		var cred NewAPITokenCredential
-		if err := json.Unmarshal([]byte(raw), &cred); err != nil {
-			return fmt.Errorf("解析 NewAPI 凭据 JSON 失败：%w", err)
-		}
-		cookie := strings.TrimSpace(cred.Cookie)
-		accessToken := strings.TrimSpace(cred.AccessToken)
-		if cookie == "" && accessToken == "" {
-			return errors.New("NewAPI token 模式需要 Cookie 或系统访问令牌（二选一）")
-		}
-		if cookie != "" && accessToken != "" {
-			return errors.New("NewAPI token 模式 Cookie 与系统访问令牌只能二选一")
-		}
-		if strings.TrimSpace(cred.UserID) == "" {
-			return errors.New("NewAPI token 模式需要 User ID（在 NewAPI 个人设置页查看）")
-		}
-	case storage.ChannelTypeSub2API:
-		var cred Sub2APITokenCredential
-		if err := json.Unmarshal([]byte(raw), &cred); err != nil {
-			return fmt.Errorf("解析 Sub2API 凭据 JSON 失败：%w", err)
-		}
-		if strings.TrimSpace(cred.AccessToken) == "" {
-			return errors.New("Sub2API token 模式需要 access_token")
-		}
-	default:
-		return fmt.Errorf("unknown channel type: %s", channelType)
-	}
-	return nil
+	return connector.ValidateTokenCredential(connector.ChannelType(channelType), raw)
 }
 
 func (s *Service) Delete(id uint) error {
@@ -550,6 +529,8 @@ func (s *Service) Resolve(ctx context.Context, c *storage.Channel) (*connector.C
 
 // buildSessionFromToken 在 token 模式下，把用户提供的凭据 JSON 解析成 AuthSession。
 // 不发任何 HTTP 请求——失效检测留给 connector.CheckAuth + 后续 GetBalance / GetRates。
+//
+// 字段映射规则来自插件注册的 TokenFields，新增插件无需改动这里。
 func (s *Service) buildSessionFromToken(c *storage.Channel) (*connector.AuthSession, error) {
 	raw, err := s.Cipher.Decrypt(c.PasswordCipher)
 	if err != nil {
@@ -558,31 +539,15 @@ func (s *Service) buildSessionFromToken(c *storage.Channel) (*connector.AuthSess
 	if strings.TrimSpace(raw) == "" {
 		return nil, errors.New("登录信息已清空，请重新编辑渠道填写凭据")
 	}
-	switch c.Type {
-	case storage.ChannelTypeNewAPI:
-		var cred NewAPITokenCredential
-		if err := json.Unmarshal([]byte(raw), &cred); err != nil {
-			return nil, fmt.Errorf("parse newapi token credential: %w", err)
-		}
-		return &connector.AuthSession{
-			UserID:      cred.UserID,
-			Cookie:      cred.Cookie,
-			AccessToken: cred.AccessToken,
-			ExpiresAt:   time.Now().Add(tokenSessionTTL),
-		}, nil
-	case storage.ChannelTypeSub2API:
-		var cred Sub2APITokenCredential
-		if err := json.Unmarshal([]byte(raw), &cred); err != nil {
-			return nil, fmt.Errorf("parse sub2api token credential: %w", err)
-		}
-		return &connector.AuthSession{
-			AccessToken:  strings.TrimSpace(cred.AccessToken),
-			RefreshToken: strings.TrimSpace(cred.RefreshToken),
-			ExpiresAt:    time.Now().Add(tokenSessionTTL),
-		}, nil
-	default:
-		return nil, fmt.Errorf("unknown channel type: %s", c.Type)
+	return connector.ParseTokenCredential(connector.ChannelType(c.Type), raw)
+}
+
+// requireCapability 校验当前渠道类型是否声明了某项能力，未声明时返回明确的"不支持"错误。
+func requireCapability(c *storage.Channel, capability connector.Capability, label string) error {
+	if connector.HasCapability(connector.ChannelType(c.Type), capability) {
+		return nil
 	}
+	return fmt.Errorf("渠道类型 %s 不支持%s", c.Type, label)
 }
 
 // prepareTurnstile 在调用 conn.Login 之前求解 Turnstile token。
@@ -965,6 +930,9 @@ func (s *Service) RedeemCode(ctx context.Context, channelID uint, code string) (
 	if err != nil {
 		return nil, err
 	}
+	if err := requireCapability(c, connector.CapRedeem, "兑换码"); err != nil {
+		return nil, err
+	}
 	resolved, err := s.Resolve(ctx, c)
 	if err != nil {
 		return nil, err
@@ -1026,6 +994,9 @@ func (s *Service) GetRechargeInfo(ctx context.Context, channelID uint) (*connect
 	if err != nil {
 		return nil, err
 	}
+	if err := requireCapability(c, connector.CapRecharge, "充值"); err != nil {
+		return nil, err
+	}
 	resolved, err := s.Resolve(ctx, c)
 	if err != nil {
 		return nil, err
@@ -1051,6 +1022,9 @@ func (s *Service) GetRechargeInfo(ctx context.Context, channelID uint) (*connect
 func (s *Service) CreateRecharge(ctx context.Context, channelID uint, req connector.RechargeRequest) (*connector.RechargeLaunch, error) {
 	c, err := s.Channels.FindByID(channelID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireCapability(c, connector.CapRecharge, "充值"); err != nil {
 		return nil, err
 	}
 	resolved, err := s.Resolve(ctx, c)
@@ -1080,8 +1054,8 @@ func (s *Service) GetSubscriptionInfo(ctx context.Context, channelID uint) (*con
 	if err != nil {
 		return nil, err
 	}
-	if c.Type != storage.ChannelTypeSub2API {
-		return nil, errors.New("仅 Sub2API 支持订阅购买")
+	if err := requireCapability(c, connector.CapSubscription, "订阅"); err != nil {
+		return nil, err
 	}
 	info, err := conn.GetSubscriptionInfo(ctx, resolved, session)
 	if err != nil {
@@ -1104,8 +1078,8 @@ func (s *Service) CreateSubscription(ctx context.Context, channelID uint, req co
 	if err != nil {
 		return nil, err
 	}
-	if c.Type != storage.ChannelTypeSub2API {
-		return nil, errors.New("仅 Sub2API 支持订阅购买")
+	if err := requireCapability(c, connector.CapSubscription, "订阅"); err != nil {
+		return nil, err
 	}
 	launch, err := conn.CreateSubscription(ctx, resolved, session, req)
 	if err != nil {
@@ -1120,8 +1094,8 @@ func (s *Service) GetSubscriptionUsage(ctx context.Context, channelID uint) (*co
 	if err != nil {
 		return nil, err
 	}
-	if c.Type != storage.ChannelTypeSub2API {
-		return nil, errors.New("仅 Sub2API 支持订阅用量")
+	if err := requireCapability(c, connector.CapSubscriptionUsage, "订阅用量"); err != nil {
+		return nil, err
 	}
 	info, err := conn.GetSubscriptionUsage(ctx, resolved, session)
 	if err != nil {
@@ -1134,6 +1108,9 @@ func (s *Service) GetSubscriptionUsage(ctx context.Context, channelID uint) (*co
 func (s *Service) ListAPIKeys(ctx context.Context, channelID uint, query connector.APIKeyQuery) (*connector.APIKeyPage, error) {
 	c, resolved, conn, session, err := s.prepareConnectorCall(ctx, channelID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireCapability(c, connector.CapAPIKeys, "API Key 管理"); err != nil {
 		return nil, err
 	}
 	page, err := conn.ListAPIKeys(ctx, resolved, session, query)
@@ -1149,6 +1126,9 @@ func (s *Service) ListAPIKeyGroups(ctx context.Context, channelID uint) ([]conne
 	if err != nil {
 		return nil, err
 	}
+	if err := requireCapability(c, connector.CapAPIKeys, "API Key 管理"); err != nil {
+		return nil, err
+	}
 	groups, err := conn.ListAPIKeyGroups(ctx, resolved, session)
 	if err != nil {
 		return nil, err
@@ -1160,6 +1140,9 @@ func (s *Service) ListAPIKeyGroups(ctx context.Context, channelID uint) ([]conne
 func (s *Service) CreateAPIKey(ctx context.Context, channelID uint, req connector.APIKeyCreateRequest) (*connector.APIKey, error) {
 	c, resolved, conn, session, err := s.prepareConnectorCall(ctx, channelID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireCapability(c, connector.CapAPIKeys, "API Key 管理"); err != nil {
 		return nil, err
 	}
 	key, err := conn.CreateAPIKey(ctx, resolved, session, req)
@@ -1175,6 +1158,9 @@ func (s *Service) UpdateAPIKey(ctx context.Context, channelID uint, keyID int64,
 	if err != nil {
 		return nil, err
 	}
+	if err := requireCapability(c, connector.CapAPIKeys, "API Key 管理"); err != nil {
+		return nil, err
+	}
 	key, err := conn.UpdateAPIKey(ctx, resolved, session, keyID, req)
 	if err != nil {
 		return nil, err
@@ -1188,6 +1174,9 @@ func (s *Service) DeleteAPIKey(ctx context.Context, channelID uint, keyID int64)
 	if err != nil {
 		return err
 	}
+	if err := requireCapability(c, connector.CapAPIKeys, "API Key 管理"); err != nil {
+		return err
+	}
 	if err := conn.DeleteAPIKey(ctx, resolved, session, keyID); err != nil {
 		return err
 	}
@@ -1198,6 +1187,9 @@ func (s *Service) DeleteAPIKey(ctx context.Context, channelID uint, keyID int64)
 func (s *Service) RevealAPIKey(ctx context.Context, channelID uint, keyID int64) (string, error) {
 	c, resolved, conn, session, err := s.prepareConnectorCall(ctx, channelID)
 	if err != nil {
+		return "", err
+	}
+	if err := requireCapability(c, connector.CapAPIKeys, "API Key 管理"); err != nil {
 		return "", err
 	}
 	key, err := conn.RevealAPIKey(ctx, resolved, session, keyID)

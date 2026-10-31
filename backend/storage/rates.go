@@ -30,6 +30,38 @@ func (r *Rates) ListByChannel(channelID uint) ([]RateSnapshot, error) {
 	return list, nil
 }
 
+// ListByChannels 一次查出多个渠道的倍率快照，按 channel_id 分组返回。
+//
+// 主页渠道卡片原先每个渠道发一次 /channels/:id/rates：一屏 9~81 张卡片就是 9~81 个请求，
+// 而且每 30s 刷新 tick 全部重发一遍，浏览器主线程光是排队解析这些响应就够卡了。
+// 改成一次批量查询后，卡片网格只发一个请求。
+func (r *Rates) ListByChannels(channelIDs []uint) (map[uint][]RateSnapshot, error) {
+	out := make(map[uint][]RateSnapshot, len(channelIDs))
+	if len(channelIDs) == 0 {
+		return out, nil
+	}
+	for _, id := range channelIDs {
+		out[id] = nil
+	}
+
+	var list []RateSnapshot
+	if err := r.db.
+		Where("channel_id IN ?", channelIDs).
+		Order("channel_id ASC, model_name ASC").
+		Find(&list).Error; err != nil {
+		return nil, err
+	}
+	for _, snap := range list {
+		out[snap.ChannelID] = append(out[snap.ChannelID], snap)
+	}
+	for id, snaps := range out {
+		if snaps == nil {
+			out[id] = []RateSnapshot{}
+		}
+	}
+	return out, nil
+}
+
 // Upsert 更新或插入倍率快照，返回此前的记录（若有），调用方据此判断是否变化。
 func (r *Rates) Upsert(snapshot *RateSnapshot) (*RateSnapshot, error) {
 	var prev RateSnapshot

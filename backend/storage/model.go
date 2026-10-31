@@ -11,6 +11,8 @@ type ChannelType string
 const (
 	ChannelTypeNewAPI  ChannelType = "newapi"
 	ChannelTypeSub2API ChannelType = "sub2api"
+	// ChannelTypeAIApi 对应编译期插件 backend/connector/aiapi（cn.aiapi.bot 自研平台）。
+	ChannelTypeAIApi ChannelType = "aiapi"
 )
 
 // CredentialMode 渠道凭据模式：
@@ -60,6 +62,16 @@ type Channel struct {
 	// 不影响 RateSnapshot 本地存储（始终保留全部分组），网关、通知设置
 	// 等仍可拿到原始全部分组。
 	OnlyCreatedKeyGroupsEnabled bool `gorm:"default:false" json:"only_created_key_groups_enabled"`
+
+	// SkipRatesOnAutoRefresh 开启后，该渠道不再采集分组倍率：
+	//   - 定时倍率扫描（scheduler 的 rateCron → ScanAllRates）整条跳过；
+	//   - 渠道卡片的"同步"（POST /channels/:id/sync）也跳过分组倍率这一步。
+	// 两种情况都不发 groups 请求，挂在倍率链路上的公告同步一并停止。
+	// 余额 / 消费 / 订阅用量的刷新不受影响，继续按 balanceCron 与"同步"更新。
+	//
+	// 仅 POST /channels/:id/refresh-rates 这个显式接口仍会拉倍率（当前前端未使用），
+	// 需要临时取一次分组倍率时走它即可。已存的分组倍率保持原样可读。
+	SkipRatesOnAutoRefresh bool `gorm:"default:false" json:"skip_rates_on_auto_refresh"`
 
 	// 用户自定义的标签与备注，仅用于展示与筛选，不参与监控逻辑。
 	// Tags 的存储格式见 ChannelTags。

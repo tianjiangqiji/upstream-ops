@@ -12,10 +12,8 @@ package connector
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -53,6 +51,7 @@ type ChannelType string
 const (
 	TypeNewAPI  ChannelType = "newapi"
 	TypeSub2API ChannelType = "sub2api"
+	TypeAIApi   ChannelType = "aiapi"
 )
 
 // Channel 已解密的渠道连接信息，由 channel 层负责构造。
@@ -404,25 +403,4 @@ type HTTPConfigSetter interface {
 // Factory 构造一个全新的 Connector 实例。
 type Factory func() Connector
 
-var (
-	mu       sync.RWMutex
-	registry = map[ChannelType]Factory{}
-)
-
-// Register 由子包在 init() 中调用，注册其类型对应的 Connector 构造器。
-func Register(t ChannelType, f Factory) {
-	mu.Lock()
-	defer mu.Unlock()
-	registry[t] = f
-}
-
-// For 按 ChannelType 取一个新的 Connector。未注册返回错误。
-func For(t ChannelType) (Connector, error) {
-	mu.RLock()
-	defer mu.RUnlock()
-	f, ok := registry[t]
-	if !ok {
-		return nil, fmt.Errorf("connector %q is not registered (did you forget the blank import?)", t)
-	}
-	return f(), nil
-}
+// 插件注册表见 plugin.go：RegisterPlugin / Plugins / For / ParseTokenCredential。

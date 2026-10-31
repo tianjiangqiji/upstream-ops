@@ -721,6 +721,84 @@ func TestSubscriptionUsageAlertsAndCooldown(t *testing.T) {
 	}
 }
 
+// TestScanAllRatesSkipsChannelWithSkipRatesOnAutoRefresh 验证「定时刷新只取额度、不取分组倍率」
+// 开关：开了的渠道在倍率扫描里一个上游请求都不发，没开的照旧拉倍率。
+func TestScanAllRatesSkipsChannelWithSkipRatesOnAutoRefresh(t *testing.T) {
+	db := openTestDB(t)
+	channels := storage.NewChannels(db)
+	authSessions := storage.NewAuthSessions(db)
+	captchas := storage.NewCaptchas(db)
+	announcements := storage.NewUpstreamAnnouncements(db)
+	rates := storage.NewRates(db)
+	monitorLogs := storage.NewMonitorLogs(db)
+	notifies := storage.NewNotifications(db)
+	cipher, err := crypto.NewCipher("secret")
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+
+	var skippedCalls atomic.Int32
+	skippedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		skippedCalls.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer skippedSrv.Close()
+
+	var activeCalls atomic.Int32
+	activeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"quota":1000000,"used_quota":500000}}`))
+		case "/api/user/self/groups":
+			activeCalls.Add(1)
+			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"default":{"ratio":1,"desc":"default"}}}`))
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"message":"","data":{"quota_per_unit":500000}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer activeSrv.Close()
+
+	for _, tc := range []struct {
+		name string
+		site string
+		skip bool
+	}{
+		{name: "skip", site: skippedSrv.URL, skip: true},
+		{name: "active", site: activeSrv.URL, skip: false},
+	} {
+		ch := &storage.Channel{
+			Name:                   tc.name,
+			Type:                   storage.ChannelTypeNewAPI,
+			SiteURL:                tc.site,
+			Username:               "u",
+			PasswordCipher:         mustEncrypt(t, cipher, `{"cookie":"session=1","user_id":"7"}`),
+			CredentialMode:         storage.CredentialModeToken,
+			MonitorEnabled:         true,
+			SkipRatesOnAutoRefresh: tc.skip,
+		}
+		if err := channels.Create(ch); err != nil {
+			t.Fatalf("create channel %s: %v", tc.name, err)
+		}
+	}
+
+	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monitorLogs, cipher)
+	dispatcher := notify.NewDispatcher(notifies, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)), notify.Policy{
+		SendMaxAttempts: 1,
+	})
+	svc := NewService(channels, announcements, rates, monitorLogs, channelSvc, dispatcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	svc.ScanAllRates(context.Background())
+
+	if got := skippedCalls.Load(); got != 0 {
+		t.Fatalf("skipped channel upstream calls = %d, want 0", got)
+	}
+	if got := activeCalls.Load(); got != 1 {
+		t.Fatalf("active channel groups calls = %d, want 1", got)
+	}
+}
+
 func mustEncrypt(t *testing.T, cipher *crypto.Cipher, plain string) string {
 	t.Helper()
 	out, err := cipher.Encrypt(plain)

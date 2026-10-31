@@ -27,9 +27,8 @@ import (
 	"github.com/bejix/upstream-ops/web"
 	"github.com/gin-gonic/gin"
 
-	// 注册 connector 实现。
-	_ "github.com/bejix/upstream-ops/backend/connector/newapi"
-	_ "github.com/bejix/upstream-ops/backend/connector/sub2api"
+	// 注册编译进二进制的 connector 插件（清单见 backend/plugins）。
+	_ "github.com/bejix/upstream-ops/backend/plugins"
 )
 
 func main() {
