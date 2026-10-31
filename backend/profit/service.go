@@ -367,6 +367,19 @@ func (s *Service) run(ctx context.Context, retryIDs []uint) (*Summary, error) {
 	channelOK, channelFailed := 0, 0
 	total := len(list)
 
+	// 重试模式下没被选中的渠道不参与本轮采集：金额和来源都直接继承上一轮快照，
+	// 不能重新用 carriedCost 判定（那会把上一轮已经成功的渠道误标成 fallback/missing，
+	// 前端就会把一堆本来正常的渠道列进「需要重试」）。
+	var prevDetails map[uint]storage.ProfitChannelCost
+	if retryIDs != nil && prev != nil {
+		for _, d := range storage.DecodeProfitChannels(prev.ChannelsJSON) {
+			if prevDetails == nil {
+				prevDetails = make(map[uint]storage.ProfitChannelCost, len(list))
+			}
+			prevDetails[d.ChannelID] = d
+		}
+	}
+
 	for i := range list {
 		ch := &list[i]
 		attempt := retryIDs == nil || retrySet[ch.ID]
@@ -374,13 +387,20 @@ func (s *Service) run(ctx context.Context, retryIDs []uint) (*Summary, error) {
 		cctx := progress.WithObserver(ctx, scoped)
 
 		if !attempt {
-			cost, source := carriedCost(ch, now)
-			details = append(details, storage.ProfitChannelCost{
-				ChannelID:   ch.ID,
-				ChannelName: ch.Name,
-				Cost:        cost,
-				Source:      source,
-			})
+			detail := storage.ProfitChannelCost{ChannelID: ch.ID, ChannelName: ch.Name, Source: sourceCarried}
+			if p, ok := prevDetails[ch.ID]; ok {
+				detail.Cost = p.Cost
+				// 上一轮就没拿到真实金额的渠道，本轮没被重试，失败状态必须保留，
+				// 否则界面会把「还没修好」的供应商当成正常。
+				if isFailedSource(p.Source) {
+					detail.Source = p.Source
+					channelFailed++
+				}
+			} else if cost, source := carriedCost(ch, now); source != sourceMissing {
+				// 上一轮快照里没有这个渠道（刚新建的），退回到渠道上的今日消费。
+				detail.Cost, detail.Source = cost, source
+			}
+			details = append(details, detail)
 			continue
 		}
 
@@ -478,7 +498,15 @@ const (
 	sourceFresh    = "fresh"
 	sourceFallback = "fallback"
 	sourceMissing  = "missing"
+	sourceCarried  = "carried"
 )
+
+// isFailedSource 判断某笔明细是否属于「本轮没拿到真实金额」。
+// carried 不算：它表示本轮压根没采集这个渠道（重试时只跑选中的几个），
+// 金额直接沿用上一轮快照，上一轮是什么结论就还是什么结论。
+func isFailedSource(source string) bool {
+	return source == sourceFallback || source == sourceMissing
+}
 
 // carriedCost 采集失败时沿用的金额：有当天记录就用它，跨天或从未采过则按 0。
 func carriedCost(ch *storage.Channel, now time.Time) (float64, string) {

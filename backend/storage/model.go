@@ -668,9 +668,12 @@ func (ProfitSetting) TableName() string { return "profit_settings" }
 // Source 说明这笔金额从哪来：
 //   - fresh：本轮重新采集成功，Cost 是刚拉到的今日消费；
 //   - fallback：采集失败，沿用渠道上最近一次成功的今日消费；
-//   - missing：采集失败且没有可用的历史金额，按 0 计入。
+//   - missing：采集失败且没有可用的历史金额，按 0 计入；
+//   - carried：本轮没有采集这个渠道（重试时只跑选中的几个），金额直接继承
+//     上一轮快照，上一轮的结论保持不变。
 //
-// fallback / missing 都会让净收益偏乐观或偏保守，所以必须透出到界面。
+// 只有 fallback / missing 属于「本轮没拿到真实金额」，需要透出到界面并允许重试；
+// carried 只是本轮没参与，不能算失败。
 type ProfitChannelCost struct {
 	ChannelID   uint    `json:"channel_id"`
 	ChannelName string  `json:"channel_name"`
@@ -692,7 +695,9 @@ type ProfitSnapshot struct {
 	// RevenueOK / AdminOK 标记两个主站口径是否本轮取到；false 时对应金额沿用上次或按 0。
 	RevenueOK bool `gorm:"not null;default:false" json:"revenue_ok"`
 	AdminOK   bool `gorm:"not null;default:false" json:"admin_ok"`
-	// ChannelOK / ChannelFailed 统计本轮渠道采集成败，失败项在 ChannelsJSON 里带 source。
+	// ChannelOK / ChannelFailed 统计本轮渠道采集结果：ChannelOK 是本轮真正采到金额的渠道数，
+	// ChannelFailed 是最终明细里仍没有真实金额的渠道数（含本轮重试失败的、以及上一轮就失败
+	// 且本轮未参与重试的）。失败项在 ChannelsJSON 里带 source。
 	ChannelOK     int `gorm:"not null;default:0" json:"channel_ok"`
 	ChannelFailed int `gorm:"not null;default:0" json:"channel_failed"`
 	// ChannelsJSON 保存 []ProfitChannelCost，用于弹窗展示失败项与重试后的沿用计算。

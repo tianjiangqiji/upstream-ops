@@ -989,8 +989,15 @@ export interface ProfitConfigTestResult {
   message: string
 }
 
-/** 单个供应商在本轮收益更新里的成本来源 */
-export type ProfitChannelSource = "fresh" | "fallback" | "missing"
+/**
+ * 单个渠道成本金额的来源：
+ * - fresh：本轮重新采集成功；
+ * - fallback：采集失败，沿用上次成功的金额；
+ * - missing：采集失败且无历史金额，按 0 计入；
+ * - carried：本轮未参与采集（重试只跑选中的渠道），金额沿用上一轮快照。
+ * 只有 fallback / missing 属于失败，需要列出并允许重试。
+ */
+export type ProfitChannelSource = "fresh" | "fallback" | "missing" | "carried"
 
 export interface ProfitChannelCost {
   channel_id: number

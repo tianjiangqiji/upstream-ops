@@ -239,8 +239,9 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
 
   useEffect(() => () => abort(), [abort])
 
+  // 只有 fallback / missing 才算失败；carried 是本轮没参与采集的渠道，不算。
   const failedChannels = useMemo(
-    () => (summary?.channels ?? []).filter((c) => c.source !== "fresh"),
+    () => (summary?.channels ?? []).filter((c) => c.source === "fallback" || c.source === "missing"),
     [summary],
   )
 
@@ -625,7 +626,10 @@ function ProfitConfigForm({
 function ProfitResultPanel({ summary }: { summary: ProfitSummary }) {
   const positive = summary.net_profit >= 0
   const freshCount = summary.channels.filter((c) => c.source === "fresh").length
-  const carriedCount = summary.channels.length - freshCount
+  const failedCount = summary.channels.filter(
+    (c) => c.source === "fallback" || c.source === "missing",
+  ).length
+  const carriedCount = summary.channels.length - freshCount - failedCount
   return (
     <div className="space-y-1.5 rounded-lg border border-border bg-background px-3 py-2.5">
       <ResultRow
@@ -655,7 +659,8 @@ function ProfitResultPanel({ summary }: { summary: ProfitSummary }) {
       />
       <p className="pt-1 text-[11px] text-muted-foreground">
         {`${freshCount} 个供应商本轮重新采集`}
-        {carriedCount > 0 ? ` · ${carriedCount} 个沿用上次金额` : ""}
+        {carriedCount > 0 ? ` · ${carriedCount} 个本轮未采集` : ""}
+        {failedCount > 0 ? ` · ${failedCount} 个采集失败` : ""}
       </p>
     </div>
   )

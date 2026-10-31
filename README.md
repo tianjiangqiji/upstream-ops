@@ -1149,7 +1149,7 @@ Mirror availability: `docker.1ms.run` works; `docker.m.daocloud.io` and `docker.
 The version lives in exactly one place, `backend/global/version.go`.
 
 ```bash
-sed -i 's/VERSION = "0\.1\.4"/VERSION = "0.1.5"/' backend/global/version.go
+sed -i 's/VERSION = "0\.1\.4"/VERSION = "0.1.6"/' backend/global/version.go
 ```
 
 ### 2. Build
@@ -1157,33 +1157,33 @@ sed -i 's/VERSION = "0\.1\.4"/VERSION = "0.1.5"/' backend/global/version.go
 `--pull=false` stops buildx from revalidating base-image metadata against the registry and uses the local tags instead.
 
 ```bash
-docker build --pull=false -t tianjiangqiji/upstream-ops:0.1.5 -t tianjiangqiji/upstream-ops:latest .
+docker build --pull=false -t tianjiangqiji/upstream-ops:0.1.6 -t tianjiangqiji/upstream-ops:latest .
 ```
 
 If it fails with `failed to fetch oauth token`, fall back to the classic builder:
 
 ```bash
-DOCKER_BUILDKIT=0 docker build -t tianjiangqiji/upstream-ops:0.1.5 -t tianjiangqiji/upstream-ops:latest .
+DOCKER_BUILDKIT=0 docker build -t tianjiangqiji/upstream-ops:0.1.6 -t tianjiangqiji/upstream-ops:latest .
 ```
 
 ### 3. Verify
 
-Start the container, probe health, read the version, and clean up in one line. `/api/version` returning `0.1.5` proves both the embedded frontend build and the version bump landed.
+Start the container, probe health, read the version, and clean up in one line. `/api/version` returning `0.1.6` proves both the embedded frontend build and the version bump landed.
 
 ```bash
-docker run -d --name uo-verify -p 18080:8418 -e APP_SECRET=verify-only-secret-at-least-32-bytes-long -e TZ=Asia/Shanghai tianjiangqiji/upstream-ops:0.1.5 && sleep 8 && curl -s http://localhost:18080/healthz && curl -s http://localhost:18080/api/version && docker rm -f uo-verify
+docker run -d --name uo-verify -p 18080:8418 -e APP_SECRET=verify-only-secret-at-least-32-bytes-long -e TZ=Asia/Shanghai tianjiangqiji/upstream-ops:0.1.6 && sleep 8 && curl -s http://localhost:18080/healthz && curl -s http://localhost:18080/api/version && docker rm -f uo-verify
 ```
 
 ### 4. Push
 
 ```bash
-docker login && docker push tianjiangqiji/upstream-ops:0.1.5 && docker push tianjiangqiji/upstream-ops:latest
+docker login && docker push tianjiangqiji/upstream-ops:0.1.6 && docker push tianjiangqiji/upstream-ops:latest
 ```
 
 ### 5. Tag the release (optional)
 
 ```bash
-git tag v0.1.5 && git push origin v0.1.5
+git tag v0.1.6 && git push origin v0.1.6
 ```
 
 Note that `.github/workflows/publish.yml` pushes to **ghcr.io** (`ghcr.io/tianjiangqiji/upstream-ops`), not Docker Hub. If you only publish to Docker Hub, ignore that workflow; if you want both, add a Docker Hub login and push step to it.
