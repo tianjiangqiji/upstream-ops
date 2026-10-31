@@ -1436,6 +1436,64 @@ http://127.0.0.1:8418
 
 检查系统设置中的“余额低告警冷却时间”。冷却状态会写入数据库，重启后仍然生效。
 
+## 自建 Docker 镜像
+
+在仓库根目录执行，每一步都是一条可直接复制的单行指令。
+
+### 0. 预热基础镜像（首次或换机时做一次）
+
+`Dockerfile` 用到的三个基础镜像都从镜像源拉一遍再打回标准名，之后构建就不会再去 `docker.io` 查 metadata。
+
+```bash
+for i in node:20-alpine golang:1.23-alpine alpine:3.20; do docker pull docker.1ms.run/$i && docker tag docker.1ms.run/$i $i; done
+```
+
+镜像源可用性：`docker.1ms.run` 可用；`docker.m.daocloud.io`、`docker.xuanyuan.me` 返回 401；`dockerproxy.cn` 不通。
+
+### 1. 升版本号
+
+版本号只有 `backend/global/version.go` 一处。
+
+```bash
+sed -i 's/VERSION = "0\.1\.4"/VERSION = "0.1.5"/' backend/global/version.go
+```
+
+### 2. 构建
+
+`--pull=false` 阻止 buildx 去 registry 校验基础镜像 metadata，直接用本地标签。
+
+```bash
+docker build --pull=false -t tianjiangqiji/upstream-ops:0.1.4 -t tianjiangqiji/upstream-ops:latest .
+```
+
+报 `failed to fetch oauth token` 时改用经典构建器：
+
+```bash
+DOCKER_BUILDKIT=0 docker build -t tianjiangqiji/upstream-ops:0.1.4 -t tianjiangqiji/upstream-ops:latest .
+```
+
+### 3. 验证
+
+起容器、探活、查版本号、清理，一条命令走完。`/api/version` 返回 `0.1.4` 才说明前端产物和版本号都嵌对了。
+
+```bash
+docker run -d --name uo-verify -p 18080:8418 -e APP_SECRET=verify-only-secret-at-least-32-bytes-long -e TZ=Asia/Shanghai tianjiangqiji/upstream-ops:0.1.4 && sleep 8 && curl -s http://localhost:18080/healthz && curl -s http://localhost:18080/api/version && docker rm -f uo-verify
+```
+
+### 4. 推送
+
+```bash
+docker login && docker push tianjiangqiji/upstream-ops:0.1.4 && docker push tianjiangqiji/upstream-ops:latest
+```
+
+### 5. 打 tag（可选）
+
+```bash
+git tag v0.1.4 && git push origin v0.1.4
+```
+
+注意 `.github/workflows/publish.yml` 推的是 **ghcr.io**（`ghcr.io/tianjiangqiji/upstream-ops`），不是 Docker Hub。只用 Docker Hub 的话这个 workflow 不用管；两边都要就得在 workflow 里再加一段 Docker Hub 的 login + push。
+
 ## License
 
 MIT

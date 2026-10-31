@@ -1130,6 +1130,64 @@ The first rate sync only creates a baseline and does not push all existing group
 
 Check the low-balance alert cooldown in system settings. Cooldown state is stored in the database and survives restarts.
 
+## Building your own Docker image
+
+Run every command from the repository root; each block is a single copy-pasteable line.
+
+### 0. Pre-pull base images (once per machine)
+
+The `Dockerfile` uses three base images. Pull them through a mirror and retag them to their canonical names, so the build no longer queries `docker.io` for metadata.
+
+```bash
+for i in node:20-alpine golang:1.23-alpine alpine:3.20; do docker pull docker.1ms.run/$i && docker tag docker.1ms.run/$i $i; done
+```
+
+Mirror availability: `docker.1ms.run` works; `docker.m.daocloud.io` and `docker.xuanyuan.me` return 401; `dockerproxy.cn` is unreachable.
+
+### 1. Bump the version
+
+The version lives in exactly one place, `backend/global/version.go`.
+
+```bash
+sed -i 's/VERSION = "0\.1\.4"/VERSION = "0.1.5"/' backend/global/version.go
+```
+
+### 2. Build
+
+`--pull=false` stops buildx from revalidating base-image metadata against the registry and uses the local tags instead.
+
+```bash
+docker build --pull=false -t tianjiangqiji/upstream-ops:0.1.4 -t tianjiangqiji/upstream-ops:latest .
+```
+
+If it fails with `failed to fetch oauth token`, fall back to the classic builder:
+
+```bash
+DOCKER_BUILDKIT=0 docker build -t tianjiangqiji/upstream-ops:0.1.4 -t tianjiangqiji/upstream-ops:latest .
+```
+
+### 3. Verify
+
+Start the container, probe health, read the version, and clean up in one line. `/api/version` returning `0.1.4` proves both the embedded frontend build and the version bump landed.
+
+```bash
+docker run -d --name uo-verify -p 18080:8418 -e APP_SECRET=verify-only-secret-at-least-32-bytes-long -e TZ=Asia/Shanghai tianjiangqiji/upstream-ops:0.1.4 && sleep 8 && curl -s http://localhost:18080/healthz && curl -s http://localhost:18080/api/version && docker rm -f uo-verify
+```
+
+### 4. Push
+
+```bash
+docker login && docker push tianjiangqiji/upstream-ops:0.1.4 && docker push tianjiangqiji/upstream-ops:latest
+```
+
+### 5. Tag the release (optional)
+
+```bash
+git tag v0.1.4 && git push origin v0.1.4
+```
+
+Note that `.github/workflows/publish.yml` pushes to **ghcr.io** (`ghcr.io/tianjiangqiji/upstream-ops`), not Docker Hub. If you only publish to Docker Hub, ignore that workflow; if you want both, add a Docker Hub login and push step to it.
+
 ## License
 
 MIT
