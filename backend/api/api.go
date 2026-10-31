@@ -25,6 +25,8 @@ type monitorService interface {
 	RefreshBalance(ctx context.Context, c *storage.Channel) error
 	RefreshRates(ctx context.Context, c *storage.Channel) error
 	CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.Channel) error
+	// RefreshCosts 只采集今日消费（收益统计用），不写余额、失败时保留上次成功值。
+	RefreshCosts(ctx context.Context, c *storage.Channel) error
 }
 
 type channelService interface {
@@ -69,6 +71,7 @@ type Deps struct {
 	GatewayKeys   *storage.GatewayKeys
 	GatewayUsage  *storage.GatewayUsageLogs
 	ModelPrices   *storage.ModelPriceOverrides
+	Profit        profitService
 	Log           *slog.Logger
 
 	// Frontend 可选：传入嵌入的前端 dist 文件系统。nil 表示不挂载（本地开发用 vite dev server）。
@@ -113,6 +116,7 @@ func Register(r *gin.Engine, d *Deps) {
 		registerRates(api, d)
 		registerMonitorLogs(api, d)
 		registerDashboard(api, d)
+		registerProfit(api, d)
 		registerSettings(api, d)
 		registerGatewayAdmin(api, d)
 	}

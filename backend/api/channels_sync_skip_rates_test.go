@@ -88,3 +88,8 @@ func (m *rateCountingMonitor) RefreshRates(ctx context.Context, c *storage.Chann
 func (m *rateCountingMonitor) CheckSubscriptionUsageAlerts(ctx context.Context, c *storage.Channel) error {
 	return nil
 }
+
+func (m *rateCountingMonitor) RefreshCosts(ctx context.Context, c *storage.Channel) error {
+	progress.OK(ctx, progress.StageCost, "ok")
+	return nil
+}

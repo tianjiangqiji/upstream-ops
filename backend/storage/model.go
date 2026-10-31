@@ -323,6 +323,7 @@ type MonitorJob string
 const (
 	MonitorJobLogin   MonitorJob = "login"
 	MonitorJobBalance MonitorJob = "balance"
+	MonitorJobCosts   MonitorJob = "costs"
 	MonitorJobRates   MonitorJob = "rates"
 )
 
@@ -634,3 +635,69 @@ type ModelPriceOverride struct {
 }
 
 func (ModelPriceOverride) TableName() string { return "model_price_overrides" }
+
+// ProfitCredentialMode 主站凭据形态。与渠道一致：token 直接用访问令牌，cookie 用整串 Cookie。
+type ProfitCredentialMode string
+
+const (
+	ProfitCredentialToken  ProfitCredentialMode = "token"
+	ProfitCredentialCookie ProfitCredentialMode = "cookie"
+)
+
+// ProfitSetting 收益统计使用的「管理员自有站点」（主站）配置，单行存储（ID 恒为 1）。
+//
+// 收益口径需要主站的**管理员**权限：GET /api/log/stat 统计全站今日消费，
+// GET /api/log/self/stat 统计管理员自己的测试消费，两者相减才是真正收入。
+// 凭据与渠道一致走 AES-GCM 加密，明文不出库、不出 API。
+type ProfitSetting struct {
+	ID                uint                 `gorm:"primaryKey" json:"id"`
+	SiteURL           string               `gorm:"size:512;not null;default:''" json:"site_url"`
+	CredentialMode    ProfitCredentialMode `gorm:"size:16;not null;default:'token'" json:"credential_mode"`
+	AccessTokenCipher string               `gorm:"type:text" json:"-"`
+	CookieCipher      string               `gorm:"type:text" json:"-"`
+	UserID            string               `gorm:"size:64;not null;default:''" json:"user_id"`
+	Enabled           bool                 `gorm:"not null;default:true" json:"enabled"`
+	CreatedAt         time.Time            `json:"created_at"`
+	UpdatedAt         time.Time            `json:"updated_at"`
+}
+
+func (ProfitSetting) TableName() string { return "profit_settings" }
+
+// ProfitChannelCost 一次收益更新里单个渠道的成本明细。
+//
+// Source 说明这笔金额从哪来：
+//   - fresh：本轮重新采集成功，Cost 是刚拉到的今日消费；
+//   - fallback：采集失败，沿用渠道上最近一次成功的今日消费；
+//   - missing：采集失败且没有可用的历史金额，按 0 计入。
+//
+// fallback / missing 都会让净收益偏乐观或偏保守，所以必须透出到界面。
+type ProfitChannelCost struct {
+	ChannelID   uint    `json:"channel_id"`
+	ChannelName string  `json:"channel_name"`
+	Cost        float64 `json:"cost"`
+	Source      string  `json:"source"`
+}
+
+// ProfitSnapshot 一次「今日收益」更新的结果快照。
+//
+// 顶部卡片不做实时计算（要拉主站和全部渠道，耗时且有失败面），只读当天最新一条；
+// 每次更新都追加新行，同一天多次更新保留历史，LatestForDay 取 sampled_at 最新的一条。
+type ProfitSnapshot struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	Day        string    `gorm:"size:10;not null;index" json:"day"`
+	Revenue    float64   `gorm:"not null;default:0" json:"revenue"`
+	AdminCost  float64   `gorm:"not null;default:0" json:"admin_cost"`
+	ChannelCost float64  `gorm:"not null;default:0" json:"channel_cost"`
+	NetProfit  float64   `gorm:"not null;default:0" json:"net_profit"`
+	// RevenueOK / AdminOK 标记两个主站口径是否本轮取到；false 时对应金额沿用上次或按 0。
+	RevenueOK bool `gorm:"not null;default:false" json:"revenue_ok"`
+	AdminOK   bool `gorm:"not null;default:false" json:"admin_ok"`
+	// ChannelOK / ChannelFailed 统计本轮渠道采集成败，失败项在 ChannelsJSON 里带 source。
+	ChannelOK     int `gorm:"not null;default:0" json:"channel_ok"`
+	ChannelFailed int `gorm:"not null;default:0" json:"channel_failed"`
+	// ChannelsJSON 保存 []ProfitChannelCost，用于弹窗展示失败项与重试后的沿用计算。
+	ChannelsJSON string    `gorm:"type:text;not null;default:''" json:"-"`
+	SampledAt    time.Time `gorm:"not null;index" json:"sampled_at"`
+}
+
+func (ProfitSnapshot) TableName() string { return "profit_snapshots" }

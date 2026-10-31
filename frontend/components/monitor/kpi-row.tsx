@@ -1,14 +1,24 @@
 "use client"
 
-import { ArrowUpRight, DollarSign, Layers, MessageSquare, Wallet } from "lucide-react"
+import { useState } from "react"
+import {
+  ArrowUpRight,
+  DollarSign,
+  Layers,
+  MessageSquare,
+  TrendingUp,
+  Wallet,
+} from "lucide-react"
 import { Card } from "@/components/ui/card"
+import { ProfitDialog } from "@/components/monitor/profit-dialog"
 import { cn } from "@/lib/utils"
 import {
   useDashboardSummary,
   useGatewayUsageStatsToday,
+  useProfitSummary,
   useRateChanges,
 } from "@/lib/queries"
-import { formatTokens, money } from "@/lib/format"
+import { formatTokens, money, relativeTime } from "@/lib/format"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 
@@ -19,6 +29,8 @@ interface Kpi {
   iconBg: string
   iconColor: string
   footer: ReactNode
+  /** 整卡可点击（例如「今日收益」点了就打开更新弹窗）。 */
+  onClick?: () => void
 }
 
 function countTodayChanges(changes: { changed_at: string }[]) {
@@ -31,6 +43,8 @@ export function KpiRow() {
   const summary = useDashboardSummary()
   const recentChanges = useRateChanges(1, 100)
   const gatewayToday = useGatewayUsageStatsToday()
+  const profit = useProfitSummary()
+  const [profitOpen, setProfitOpen] = useState(false)
 
   const data = summary.data
   const total = data?.total_channels ?? 0
@@ -47,7 +61,34 @@ export function KpiRow() {
   const todayInput = gatewayToday.data?.total_input_tokens ?? 0
   const todayOutput = gatewayToday.data?.total_output_tokens ?? 0
 
+  // 收益要点了「更新」才算，卡片只展示最近一次结果；没有快照就显示 —。
+  const profitData = profit.data
+  const profitReady = profitData?.has_snapshot ?? false
+  const profitValue = profitReady ? money(profitData?.net_profit, { precise: true }) : "—"
+  const profitPositive = (profitData?.net_profit ?? 0) >= 0
+  let profitFooter = "点击更新今日收益"
+  if (profitData?.running) {
+    profitFooter = "正在更新…"
+  } else if (!profitData?.configured) {
+    profitFooter = "点击配置主站并更新"
+  } else if (profitReady) {
+    profitFooter = `更新于 ${relativeTime(profitData?.sampled_at)}`
+  }
+
   const kpis: Kpi[] = [
+    {
+      label: "今日收益",
+      value: (
+        <span className={cn(profitReady && (profitPositive ? "text-success" : "text-danger"))}>
+          {profitValue}
+        </span>
+      ),
+      icon: TrendingUp,
+      iconBg: "bg-success/10",
+      iconColor: "text-success",
+      footer: <span className="text-muted-foreground">{profitFooter}</span>,
+      onClick: () => setProfitOpen(true),
+    },
     {
       label: "总余额",
       value: money(totalBalance),
@@ -146,24 +187,58 @@ export function KpiRow() {
   ]
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-      {kpis.map((k) => (
-        <Card
-          key={k.label}
-          className="flex flex-row items-start justify-between gap-2 border border-border p-3 shadow-none sm:p-4"
-        >
-          <div className="flex min-w-0 flex-col">
-            <span className="text-xs text-muted-foreground">{k.label}</span>
-            <p className="mt-1 text-xl font-bold tracking-tight text-foreground sm:text-2xl">{k.value}</p>
-            <p className="mt-1 min-w-0 truncate text-xs" title={typeof k.footer === "string" ? k.footer : undefined}>
-              {k.footer}
-            </p>
-          </div>
-          <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-xl sm:size-10", k.iconBg)}>
-            <k.icon className={cn("size-5", k.iconColor)} />
-          </span>
-        </Card>
-      ))}
-    </div>
+    <>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-7">
+        {kpis.map((k) => {
+          const clickable = k.onClick != null
+          return (
+            <Card
+              key={k.label}
+              className={cn(
+                "flex flex-row items-start justify-between gap-2 border border-border p-3 shadow-none sm:p-4",
+                clickable &&
+                  "cursor-pointer transition-colors hover:border-foreground/20 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+              )}
+              role={clickable ? "button" : undefined}
+              tabIndex={clickable ? 0 : undefined}
+              aria-label={clickable ? `${k.label}：打开更新弹窗` : undefined}
+              onClick={k.onClick}
+              onKeyDown={
+                clickable
+                  ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault()
+                        k.onClick?.()
+                      }
+                    }
+                  : undefined
+              }
+            >
+              <div className="flex min-w-0 flex-col">
+                <span className="text-xs text-muted-foreground">{k.label}</span>
+                <p className="mt-1 text-xl font-bold tracking-tight text-foreground sm:text-2xl">
+                  {k.value}
+                </p>
+                <p
+                  className="mt-1 min-w-0 truncate text-xs"
+                  title={typeof k.footer === "string" ? k.footer : undefined}
+                >
+                  {k.footer}
+                </p>
+              </div>
+              <span
+                className={cn(
+                  "flex size-9 shrink-0 items-center justify-center rounded-xl sm:size-10",
+                  k.iconBg,
+                )}
+              >
+                <k.icon className={cn("size-5", k.iconColor)} />
+              </span>
+            </Card>
+          )
+        })}
+      </div>
+      <ProfitDialog open={profitOpen} onOpenChange={setProfitOpen} />
+    </>
   )
 }

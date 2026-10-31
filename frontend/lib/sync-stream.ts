@@ -5,6 +5,8 @@
 import { getToken, notifyUnauthorized } from "@/lib/api"
 
 export type ProgressStage =
+  | "revenue"
+  | "admin_cost"
   | "captcha"
   | "session"
   | "login"
@@ -30,6 +32,8 @@ export interface ProgressEvent {
 export interface SyncOptions {
   onEvent: (ev: ProgressEvent) => void
   signal?: AbortSignal
+  /** 可选 JSON 请求体，例如收益重试只带需要重试的渠道 id。 */
+  body?: unknown
 }
 
 /**
@@ -43,7 +47,7 @@ export interface SyncOptions {
  */
 async function streamSSE(
   path: string,
-  { onEvent, signal }: SyncOptions,
+  { onEvent, signal, body }: SyncOptions,
 ): Promise<void> {
   const token = getToken()
   const controller = new AbortController()
@@ -60,7 +64,9 @@ async function streamSSE(
       headers: {
         Accept: "text/event-stream",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     })
 
@@ -135,4 +141,20 @@ export function syncAllChannelsStream(options: SyncOptions) {
 /** 触发 /api/channels/:id/test-login（仅登录验证，session 落库以便后续 sync 复用）。 */
 export function testLoginStream(channelID: number, options: SyncOptions) {
   return streamSSE(`/api/channels/${channelID}/test-login`, options)
+}
+
+/**
+ * 触发 /api/profit/refresh：完整跑一轮今日收益。
+ * 流程是 主站总收益 → 管理员消费 → 逐供应商今日消费，每一步都会推事件。
+ */
+export function refreshProfitStream(options: SyncOptions) {
+  return streamSSE("/api/profit/refresh", options)
+}
+
+/** 触发 /api/profit/retry：只重试指定供应商，主站金额沿用上一轮快照。 */
+export function retryProfitStream(channelIDs: number[], options: SyncOptions) {
+  return streamSSE("/api/profit/retry", {
+    ...options,
+    body: { channel_ids: channelIDs },
+  })
 }

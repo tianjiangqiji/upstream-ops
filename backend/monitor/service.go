@@ -133,24 +133,12 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 		map[string]any{"balance": res.Balance})
 
 	progress.Start(ctx, progress.StageCost, "拉取消费…")
-	costRes, err := conn.GetCosts(ctx, resolved, session)
+	costRes, costAt, err := s.collectCosts(ctx, c, resolved, conn, session, sampledAt, storage.MonitorJobBalance)
 	if err != nil {
-		progress.Fail(ctx, progress.StageCost, err.Error())
-		s.notifyError(ctx, c, storage.EventMonitorFailed, "消费采集失败", err)
 		return err
 	}
-	costAt := time.Now()
-	if err := s.channels.UpdateCosts(c.ID, costRes.TodayCost, costRes.TotalCost, costAt); err != nil {
-		progress.Fail(ctx, progress.StageCost, err.Error())
-		return err
-	}
-	_ = s.rates.AppendCost(&storage.CostSnapshot{
-		ChannelID: c.ID,
-		TodayCost: costRes.TodayCost,
-		SampledAt: sampledAt,
-	})
 	progress.OK(ctx, progress.StageCost, fmt.Sprintf("今日 %0.4f / 累计 %0.4f", costRes.TodayCost, costRes.TotalCost),
-		map[string]any{"today_cost": costRes.TodayCost, "total_cost": costRes.TotalCost})
+		map[string]any{"today_cost": costRes.TodayCost, "total_cost": costRes.TotalCost, "cost_at": costAt})
 
 	if c.BalanceThreshold > 0 && res.Balance < c.BalanceThreshold {
 		body := fmt.Sprintf("当前余额: %.4f，阈值: %.4f", res.Balance, c.BalanceThreshold)
@@ -162,6 +150,65 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 		})
 	}
 	return nil
+}
+
+// RefreshCosts 只重新采集今日 / 累计消费，用于收益统计。
+//
+// 与 RefreshBalance 的差别：
+//   - 不发余额事件、不写余额字段，卡片上的余额不会因为一次收益统计被刷新；
+//   - 失败时不写 UpdateCosts，渠道上保留最近一次成功的 today_cost / today_cost_at，
+//     收益统计正是靠这份残留值实现"失败的供应商按上次成功金额计算"。
+func (s *Service) RefreshCosts(ctx context.Context, c *storage.Channel) error {
+	resolved, conn, session, err := s.prepare(ctx, c)
+	if err != nil {
+		s.notifyError(ctx, c, storage.EventLoginFailed, "登录失败", err)
+		return err
+	}
+	progress.Start(ctx, progress.StageCost, "拉取消费…")
+	costRes, costAt, err := s.collectCosts(ctx, c, resolved, conn, session, time.Now(), storage.MonitorJobCosts)
+	if err != nil {
+		return err
+	}
+	progress.OK(ctx, progress.StageCost, fmt.Sprintf("今日 %0.4f / 累计 %0.4f", costRes.TodayCost, costRes.TotalCost),
+		map[string]any{"today_cost": costRes.TodayCost, "total_cost": costRes.TotalCost, "cost_at": costAt})
+	return nil
+}
+
+// collectCosts 拉取消费并落库（渠道字段 + 消费快照），返回结果与采集时间。
+//
+// 失败路径统一在这里处理：进度事件、通知、错误返回，且不触碰 UpdateCosts，
+// 保证渠道上的今日消费始终是"最近一次成功采集"的值。
+func (s *Service) collectCosts(ctx context.Context, c *storage.Channel, resolved *connector.Channel, conn connector.Connector, session *connector.AuthSession, sampledAt time.Time, job storage.MonitorJob) (*connector.CostResult, time.Time, error) {
+	started := time.Now()
+	costRes, err := conn.GetCosts(ctx, resolved, session)
+	finished := time.Now()
+	_ = s.monitorLogs.Append(&storage.MonitorLog{
+		ChannelID:    c.ID,
+		Job:          job,
+		Success:      err == nil,
+		ErrorMessage: errString(err),
+		StartedAt:    started,
+		FinishedAt:   finished,
+	})
+	if err != nil {
+		progress.Fail(ctx, progress.StageCost, err.Error())
+		s.notifyError(ctx, c, storage.EventMonitorFailed, "消费采集失败", err)
+		return nil, time.Time{}, err
+	}
+	costAt := time.Now()
+	if err := s.channels.UpdateCosts(c.ID, costRes.TodayCost, costRes.TotalCost, costAt); err != nil {
+		progress.Fail(ctx, progress.StageCost, err.Error())
+		return nil, time.Time{}, err
+	}
+	if sampledAt.IsZero() {
+		sampledAt = costAt
+	}
+	_ = s.rates.AppendCost(&storage.CostSnapshot{
+		ChannelID: c.ID,
+		TodayCost: costRes.TodayCost,
+		SampledAt: sampledAt,
+	})
+	return costRes, costAt, nil
 }
 
 // RefreshRates 单个渠道倍率刷新。调用方负责决定是否该拉：

@@ -13,6 +13,9 @@ import (
 type Stage string
 
 const (
+	// StageRevenue / StageAdminCost 用于收益统计：主站今日总收益、管理员测试消费。
+	StageRevenue      Stage = "revenue"
+	StageAdminCost    Stage = "admin_cost"
 	StageCaptcha      Stage = "captcha"
 	StageLogin        Stage = "login"
 	StageSession      Stage = "session"
@@ -84,4 +87,11 @@ func OK(ctx context.Context, s Stage, msg string, data ...any) {
 func Fail(ctx context.Context, s Stage, msg string) {
 	no := false
 	FromContext(ctx).Emit(Event{Stage: s, Message: msg, OK: &no, Time: time.Now()})
+}
+
+// FailData 发送一条带 payload 的"失败"事件。
+// 用于"流程跑完但有部分失败"的场景：既要有失败标记，又要把结果一并交给前端。
+func FailData(ctx context.Context, s Stage, msg string, data any) {
+	no := false
+	FromContext(ctx).Emit(Event{Stage: s, Message: msg, OK: &no, Data: data, Time: time.Now()})
 }

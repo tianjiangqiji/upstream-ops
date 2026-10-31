@@ -1463,33 +1463,33 @@ sed -i 's/VERSION = "0\.1\.4"/VERSION = "0.1.5"/' backend/global/version.go
 `--pull=false` 阻止 buildx 去 registry 校验基础镜像 metadata，直接用本地标签。
 
 ```bash
-docker build --pull=false -t tianjiangqiji/upstream-ops:0.1.4 -t tianjiangqiji/upstream-ops:latest .
+docker build --pull=false -t tianjiangqiji/upstream-ops:0.1.5 -t tianjiangqiji/upstream-ops:latest .
 ```
 
 报 `failed to fetch oauth token` 时改用经典构建器：
 
 ```bash
-DOCKER_BUILDKIT=0 docker build -t tianjiangqiji/upstream-ops:0.1.4 -t tianjiangqiji/upstream-ops:latest .
+DOCKER_BUILDKIT=0 docker build -t tianjiangqiji/upstream-ops:0.1.5 -t tianjiangqiji/upstream-ops:latest .
 ```
 
 ### 3. 验证
 
-起容器、探活、查版本号、清理，一条命令走完。`/api/version` 返回 `0.1.4` 才说明前端产物和版本号都嵌对了。
+起容器、探活、查版本号、清理，一条命令走完。`/api/version` 返回 `0.1.5` 才说明前端产物和版本号都嵌对了。
 
 ```bash
-docker run -d --name uo-verify -p 18080:8418 -e APP_SECRET=verify-only-secret-at-least-32-bytes-long -e TZ=Asia/Shanghai tianjiangqiji/upstream-ops:0.1.4 && sleep 8 && curl -s http://localhost:18080/healthz && curl -s http://localhost:18080/api/version && docker rm -f uo-verify
+docker run -d --name uo-verify -p 18080:8418 -e APP_SECRET=verify-only-secret-at-least-32-bytes-long -e TZ=Asia/Shanghai tianjiangqiji/upstream-ops:0.1.5 && sleep 8 && curl -s http://localhost:18080/healthz && curl -s http://localhost:18080/api/version && docker rm -f uo-verify
 ```
 
 ### 4. 推送
 
 ```bash
-docker login && docker push tianjiangqiji/upstream-ops:0.1.4 && docker push tianjiangqiji/upstream-ops:latest
+docker login && docker push tianjiangqiji/upstream-ops:0.1.5 && docker push tianjiangqiji/upstream-ops:latest
 ```
 
 ### 5. 打 tag（可选）
 
 ```bash
-git tag v0.1.4 && git push origin v0.1.4
+git tag v0.1.5 && git push origin v0.1.5
 ```
 
 注意 `.github/workflows/publish.yml` 推的是 **ghcr.io**（`ghcr.io/tianjiangqiji/upstream-ops`），不是 Docker Hub。只用 Docker Hub 的话这个 workflow 不用管；两边都要就得在 workflow 里再加一段 Docker Hub 的 login + push。

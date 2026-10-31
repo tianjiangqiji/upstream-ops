@@ -431,6 +431,62 @@ func (c *Client) GetCosts(ctx context.Context, ch *connector.Channel, session *c
 	}, nil
 }
 
+// GetLogStat 拉取全站日志统计（需要管理员权限），用于收益统计的总收益口径。
+//
+// 这里不做 recharge multiplier：收益与成本都是主站真实美元口径，不应被渠道倍率影响。
+func (c *Client) GetLogStat(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, q connector.LogStatQuery) (*connector.LogStatResult, error) {
+	return c.fetchLogStat(ctx, ch, session, q, "/api/log/stat")
+}
+
+// GetSelfLogStat 拉取会话用户自己的日志统计，用于扣除管理员测试消费。
+func (c *Client) GetSelfLogStat(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, q connector.LogStatQuery) (*connector.LogStatResult, error) {
+	return c.fetchLogStat(ctx, ch, session, q, "/api/log/self/stat")
+}
+
+// fetchLogStat 拼装日志统计请求并解析 {quota,rpm,tpm}。
+//
+// type 必须显式传入（消费为 2）：上游在 type=0 时不加类型过滤，
+// 会把充值、退款、登录等记录一并计入 sum(quota)。
+func (c *Client) fetchLogStat(ctx context.Context, ch *connector.Channel, session *connector.AuthSession, q connector.LogStatQuery, path string) (*connector.LogStatResult, error) {
+	site := strings.TrimRight(ch.SiteURL, "/")
+	status, err := c.fetchStatus(ctx, site)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	query.Set("type", strconv.Itoa(q.Type))
+	query.Set("start_timestamp", strconv.FormatInt(q.Start.Unix(), 10))
+	query.Set("end_timestamp", strconv.FormatInt(q.End.Unix(), 10))
+	query.Set("token_name", "")
+	query.Set("model_name", "")
+	query.Set("group", "")
+	if path == "/api/log/stat" {
+		// 全站统计按管理员视角，username/channel 留空表示不过滤。
+		query.Set("username", "")
+		query.Set("channel", "")
+	}
+
+	body, err := c.getJSON(ctx, site+path+"?"+query.Encode(), session)
+	if err != nil {
+		return nil, fmt.Errorf("newapi log stat: %w", err)
+	}
+	var stat struct {
+		Quota float64 `json:"quota"`
+		RPM   int     `json:"rpm"`
+		TPM   int     `json:"tpm"`
+	}
+	if err := json.Unmarshal(body, &stat); err != nil {
+		return nil, fmt.Errorf("newapi log stat decode: %w", err)
+	}
+	amount := c.quotaToUSD(stat.Quota, status.quotaPerUnit())
+	// 与 GetCosts 的口径保持一致：站点按非美元展示时，额度换算后再乘汇率，
+	// 得到的是与渠道消费同一币种口径的数值（应用内部统一按美元符号展示）。
+	if rate := status.displayExchangeRate(); rate > 0 {
+		amount = round4(amount * rate)
+	}
+	return &connector.LogStatResult{Amount: amount, RPM: stat.RPM, TPM: stat.TPM}, nil
+}
+
 func (c *Client) GetRates(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) ([]connector.RateResult, error) {
 	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/user/self/groups", session)
 	if err != nil {

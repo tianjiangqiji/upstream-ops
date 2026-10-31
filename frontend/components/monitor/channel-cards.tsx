@@ -593,6 +593,8 @@ interface BulkSyncState {
 }
 
 const stageLabel: Record<ProgressEvent["stage"], string> = {
+  revenue: "收益",
+  admin_cost: "管理员",
   captcha: "打码",
   session: "会话",
   login: "登录",
@@ -605,7 +607,9 @@ const stageLabel: Record<ProgressEvent["stage"], string> = {
 }
 
 const stageOrder: Record<ProgressEvent["stage"], number> = {
-  captcha: 1,
+  revenue: 1,
+  admin_cost: 2,
+  captcha: 3,
   session: 2,
   login: 3,
   balance: 4,

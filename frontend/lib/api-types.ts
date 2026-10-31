@@ -63,7 +63,7 @@ export type CaptchaProviderType =
   | "anticaptcha"
   | "yescaptcha"
 
-export type MonitorJob = "login" | "balance" | "rates"
+export type MonitorJob = "login" | "balance" | "costs" | "rates"
 
 export type NotificationEvent =
   | "balance_low"
@@ -956,4 +956,66 @@ export interface ModelDefaultPrice {
   output_price_per_token: number
   cache_creation_price_per_token: number
   cache_read_price_per_token: number
+}
+
+/** 主站（管理员自有站点）凭据模式：token 直连 / cookie 复用登录态 */
+export type ProfitCredentialMode = "token" | "cookie"
+
+/** 主站配置视图。凭据只回是否已保存，不回明文。 */
+export interface ProfitConfig {
+  site_url: string
+  credential_mode: ProfitCredentialMode
+  user_id: string
+  enabled: boolean
+  has_token: boolean
+  has_cookie: boolean
+  configured: boolean
+}
+
+/** 保存主站配置的入参：凭据留空表示保留原有值 */
+export interface ProfitConfigInput {
+  site_url: string
+  credential_mode: ProfitCredentialMode
+  user_id: string
+  access_token?: string
+  cookie?: string
+  enabled?: boolean
+}
+
+export interface ProfitConfigTestResult {
+  site_url: string
+  revenue: number
+  duration_seconds: number
+  message: string
+}
+
+/** 单个供应商在本轮收益更新里的成本来源 */
+export type ProfitChannelSource = "fresh" | "fallback" | "missing"
+
+export interface ProfitChannelCost {
+  channel_id: number
+  channel_name: string
+  cost: number
+  source: ProfitChannelSource
+}
+
+/** 顶部卡片与收益弹窗读取的结果（当天最新一条快照） */
+export interface ProfitSummary {
+  configured: boolean
+  enabled: boolean
+  site_url: string
+  day: string
+  has_snapshot: boolean
+  revenue: number
+  admin_cost: number
+  channel_cost: number
+  net_profit: number
+  revenue_ok: boolean
+  admin_ok: boolean
+  channel_ok: number
+  channel_failed: number
+  channels: ProfitChannelCost[]
+  sampled_at?: string
+  running: boolean
+  snapshot_failed: number
 }

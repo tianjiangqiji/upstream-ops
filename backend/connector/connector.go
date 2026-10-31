@@ -387,6 +387,40 @@ type SessionRefresher interface {
 	RefreshSession(ctx context.Context, channel *Channel, session *AuthSession) (*AuthSession, error)
 }
 
+// LogStatTypeConsume 日志统计里"消费"类型的取值，对应上游 LogTypeConsume。
+//
+// 上游 SumUsedQuota 在 type=0（未指定）时**不加类型条件**，会把充值、管理、
+// 退款、登录等记录一起算进 sum(quota)；统计消费金额必须显式传 2。
+const LogStatTypeConsume = 2
+
+// LogStatQuery 日志统计查询条件。时间区间由调用方按统计时区（Asia/Shanghai）切分。
+type LogStatQuery struct {
+	Type  int
+	Start time.Time
+	End   time.Time
+}
+
+// LogStatResult 一次日志统计结果。
+//
+// Amount 已由实现换算成展示货币（USD 等值），与 CostResult 口径一致：
+// 上游原始 quota 除以站点 quotaPerUnit，站点按非美元展示时再按汇率换算。
+// RPM / TPM 仅用于展示，收益计算不使用。
+type LogStatResult struct {
+	Amount float64
+	RPM    int
+	TPM    int
+}
+
+// StatConnector 是支持日志统计接口的 connector 可选能力，用于收益统计。
+//
+// GetLogStat 对应上游「获取日志统计」（需要管理员权限，统计全站）；
+// GetSelfLogStat 对应「获取个人日志统计」（统计会话用户自己）。
+// 目前只有 NewAPI 实现；收益统计的主站必须是 NewAPI 站点。
+type StatConnector interface {
+	GetLogStat(ctx context.Context, channel *Channel, session *AuthSession, q LogStatQuery) (*LogStatResult, error)
+	GetSelfLogStat(ctx context.Context, channel *Channel, session *AuthSession, q LogStatQuery) (*LogStatResult, error)
+}
+
 type ProxySetter interface {
 	SetProxy(proxyURL string)
 }

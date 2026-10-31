@@ -32,6 +32,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { CaptchaFormDialog } from "@/components/monitor/captcha-form-dialog";
 import { NotificationFormDialog } from "@/components/monitor/notification-form-dialog";
+import { ProfitConfigSection } from "@/components/monitor/profit-config-section";
 import { apiFetch } from "@/lib/api";
 import { useTriggerRefresh } from "@/lib/refresh-context";
 import type {
@@ -958,6 +959,8 @@ export default function SettingsPage() {
               </Field>
             </div>
           </SectionCard>
+
+          <ProfitConfigSection />
 
           <SectionCard
             icon={<Workflow className="size-4 text-violet-600" />}

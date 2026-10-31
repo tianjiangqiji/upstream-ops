@@ -769,6 +769,11 @@ func (s *stubMonitor) CheckSubscriptionUsageAlerts(ctx context.Context, c *stora
 	return nil
 }
 
+func (s *stubMonitor) RefreshCosts(ctx context.Context, c *storage.Channel) error {
+	progress.OK(ctx, progress.StageCost, "ok")
+	return nil
+}
+
 func mustEncryptAPI(t *testing.T, cipher *crypto.Cipher, plain string) string {
 	t.Helper()
 	out, err := cipher.Encrypt(plain)

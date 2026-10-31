@@ -21,6 +21,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/logger"
 	"github.com/bejix/upstream-ops/backend/monitor"
 	"github.com/bejix/upstream-ops/backend/notify"
+	"github.com/bejix/upstream-ops/backend/profit"
 	"github.com/bejix/upstream-ops/backend/runtimeconfig"
 	"github.com/bejix/upstream-ops/backend/scheduler"
 	"github.com/bejix/upstream-ops/backend/storage"
@@ -105,6 +106,8 @@ func main() {
 	gatewayProviders := storage.NewGatewayProviders(db)
 	gatewayUsage := storage.NewGatewayUsageLogs(db)
 	modelPrices := storage.NewModelPriceOverrides(db)
+	profitSettings := storage.NewProfitSettings(db)
+	profitSnapshots := storage.NewProfitSnapshots(db)
 
 	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monLogs, cipher)
 	channelSvc.UpdateProxyConfig(cfg.Proxy)
@@ -129,6 +132,7 @@ func main() {
 	})
 	dispatcher.UpdateProxyConfig(cfg.Proxy)
 	monitorSvc := monitor.NewService(channels, announcements, rates, monLogs, channelSvc, dispatcher, log)
+	profitSvc := profit.NewService(profitSettings, profitSnapshots, channels, monitorSvc, channelSvc, cipher, log)
 
 	schedulerFactory := func(scfg config.SchedulerConfig, pcfg config.ProxyConfig) *scheduler.Scheduler {
 		return scheduler.New(scfg, monitorSvc, monLogs, rates, notifies, announcements, captchas, cipher, gatewaySvc, pcfg, log)
@@ -191,6 +195,7 @@ func main() {
 		GatewayKeys:   gatewayKeys,
 		GatewayUsage:  gatewayUsage,
 		ModelPrices:   modelPrices,
+		Profit:        profitSvc,
 		Log:           log,
 		Frontend:      frontendFS,
 	})

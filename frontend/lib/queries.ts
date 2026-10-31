@@ -18,6 +18,7 @@ import type {
   GatewayUsageStats,
   NotificationChannel,
   NotificationLogPage,
+  ProfitSummary,
   RateChangeLogPage,
   RateSnapshot,
   SystemConfigResponse,
@@ -116,7 +117,7 @@ function fetchShared<T>(path: string, key: string): Promise<T> {
  * - path 变化时同样保留旧 data，新数据到达前 stale = true，调用方可据此区分新旧条件的结果
  * - 同 URL + 同 tick 的并发调用共享一次请求
  */
-function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
+export function useApi<T>(path: string | null, watchRefresh = true): QueryState<T> {
   const [data, setData] = useState<T | null>(null)
   const [dataPath, setDataPath] = useState<string | null>(null)
   const [loading, setLoading] = useState<boolean>(path !== null)
@@ -397,4 +398,12 @@ export function useCaptchaConfigs(enabled = true) {
 
 export function useSystemConfig() {
   return useApi<SystemConfigResponse>("/settings/config")
+}
+
+/**
+ * 今日收益结果。后端不做实时计算，这里只读当天最新一条快照，
+ * 所以「更新」按钮才会去触发 /api/profit/refresh。
+ */
+export function useProfitSummary() {
+  return useApi<ProfitSummary>("/profit/summary")
 }
