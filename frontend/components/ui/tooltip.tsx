@@ -16,14 +16,16 @@ function TooltipProvider({
   )
 }
 
+/**
+ * Tooltip 不再自带 Provider —— Radix 的 Provider context 有默认值，裸 Root 可以直接工作。
+ * 之前每个 Tooltip 实例都包一层 Provider：渠道卡片里每个倍率 chip 都是一个 Tooltip，
+ * 一屏几十张卡片 × 几十个分组 = 上千个 Provider 实例，滚动和同步时全是白烧的 context 开销。
+ * 现在统一由根部的 TooltipProvider（见 app-shell.tsx）提供默认参数。
+ */
 function Tooltip({
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return (
-    <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
-    </TooltipProvider>
-  )
+  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
 }
 
 function TooltipTrigger({

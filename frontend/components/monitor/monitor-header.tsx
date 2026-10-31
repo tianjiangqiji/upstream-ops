@@ -108,7 +108,10 @@ export function MonitorHeader() {
   const themeLabel = theme === "system" ? "自动" : theme === "dark" ? "深色" : "浅色"
 
   return (
-    <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur-sm">
+    // 刻意不用 backdrop-blur：sticky header 上的背景模糊会让浏览器在滚动时每一帧都重算
+    // 整块 header 背后的内容模糊，页面一长（渠道卡片多）滚动就直接掉帧甚至卡死。
+    // bg-background 完全不透明，视觉上没有差别，滚动期不再有持续的重绘开销。
+    <header className="sticky top-0 z-20 border-b border-border bg-background">
       <div className="mx-auto flex h-12 max-w-[120rem] items-center justify-between gap-2 px-3 sm:h-14 sm:gap-4 sm:px-6 lg:px-8">
         {/* left: logo + title */}
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-2.5">

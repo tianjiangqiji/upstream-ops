@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import {
   ArrowUpDown,
@@ -55,7 +55,7 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useConfirm } from "@/components/ui/confirm-dialog"
-import { useChannels, useChannelsPage, useChannelRates } from "@/lib/queries"
+import { EMPTY_RATES, useChannels, useChannelsPage, useChannelRatesBatch, useConnectorPlugins } from "@/lib/queries"
 import { channelTagKey } from "@/lib/channel-tags"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
@@ -213,39 +213,51 @@ function ratioTone(r: number): string {
   return "bg-muted text-foreground ring-border"
 }
 
-/** InlineRates 在渠道卡片内部展示当前所有分组倍率，默认 2 行折叠 + 展开按钮。 */
-function InlineRates({ channel }: { channel: Channel }) {
-  const { data, loading } = useChannelRates(channel.id, channel.only_created_key_groups_enabled)
-  const rates = [...(data ?? [])].sort((a, b) => a.ratio - b.ratio)
-  const [expanded, setExpanded] = useState(false)
-  const [hasOverflow, setHasOverflow] = useState(false)
-  const chipBoxRef = useRef<HTMLDivElement>(null)
+/**
+ * rateChipTitle 生成倍率 chip 的原生 title 文本（替代原来的 Tooltip 内容）。
+ * 原生 title 是纯字符串，不产生任何组件实例和事件订阅。
+ */
+function rateChipTitle(r: RateSnapshot): string {
+  const parts = [`${r.model_name} ×${formatRatio(r.ratio)}`]
+  parts.push(r.description ? r.description : "(无描述)")
+  parts.push(`最近更新：${relativeTime(r.last_seen_at)}`)
+  return parts.join("\n")
+}
 
-  // 监听 chip 容器尺寸变化，决定是否要显示"展开"按钮。
-  // 收起状态下 scrollHeight > clientHeight 表示有内容被裁剪。
-  useEffect(() => {
-    const el = chipBoxRef.current
-    if (!el) return
-    const check = () => {
-      if (expanded) return
-      setHasOverflow(el.scrollHeight > el.clientHeight + 1)
-    }
-    check()
-    const ro = new ResizeObserver(check)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [rates.length, expanded])
+/**
+ * InlineRates 在渠道卡片内部展示当前所有分组倍率，默认折叠 + 展开按钮。
+ *
+ * rates 由父组件用 useChannelRatesBatch 一次批量拉回后传进来 ——
+ * 这里刻意不再自己发请求：原先每个卡片各挂一个 useChannelRates，
+ * 一屏 N 张卡片就是 N 个请求，每 30s 刷新 tick 全部重发一遍。
+ *
+ * 两个关键取舍：
+ * 1) chip 的提示改用原生 title，不用 Radix Tooltip。一个渠道几十个分组 × 一屏 N 张卡片
+ *    = 几百上千个 Tooltip 实例（每个都带 useState/useId/refs 和一层 Provider/Popper context），
+ *    光是这些实例的创建和事件订阅就足以让滚动掉帧。原生 title 零组件开销。
+ * 2) 折叠时只渲染前 COLLAPSED_CHIP_LIMIT 个 chip。原先虽然视觉上被 max-h 裁掉，
+ *    DOM 里其实仍然渲染了全部 chip，节点数并不减少；滚动时这些节点依旧参与命中测试和合成。
+ *
+ * 用 memo 包住：父组件因为同步进度等 state 频繁重渲染时，只要 rates 引用没变就整块跳过。
+ */
+const COLLAPSED_CHIP_LIMIT = 16
+
+const InlineRates = memo(function InlineRates({ rates, loading }: { rates: RateSnapshot[]; loading: boolean }) {
+  const sorted = useMemo(() => [...rates].sort((a, b) => a.ratio - b.ratio), [rates])
+  const [expanded, setExpanded] = useState(false)
 
   if (loading) return null
-  if (rates.length === 0) return null
+  if (sorted.length === 0) return null
 
-  const showToggle = hasOverflow || expanded
+  const hasMore = sorted.length > COLLAPSED_CHIP_LIMIT
+  const shown = expanded ? sorted : sorted.slice(0, COLLAPSED_CHIP_LIMIT)
+  const showToggle = hasMore
 
   return (
     <div className="mt-3 border-t border-border pt-2.5">
       <div className="mb-1.5 flex items-center justify-between">
         <p className="text-[11px] text-muted-foreground">
-          {rates.length} 个分组
+          {sorted.length} 个分组
         </p>
         {showToggle ? (
           <button
@@ -253,7 +265,7 @@ function InlineRates({ channel }: { channel: Channel }) {
             onClick={() => setExpanded((v) => !v)}
             className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground hover:text-foreground"
           >
-            {expanded ? "收起" : "展开"}
+            {expanded ? "收起" : `展开其余 ${sorted.length - COLLAPSED_CHIP_LIMIT} 个`}
             <ChevronDown
               className={cn(
                 "size-3 transition-transform duration-200",
@@ -265,52 +277,31 @@ function InlineRates({ channel }: { channel: Channel }) {
       </div>
 
       <div className="relative min-h-16">
-        <div
-          ref={chipBoxRef}
-          className={cn(
-            "flex flex-wrap gap-1 overflow-hidden transition-[max-height] duration-300 ease-out",
-            // 收起：max-h-12 (~48px) 约 2 行；展开：足够大的上限，留点缓冲让 transition 不立即消失。
-            expanded ? "max-h-150" : "max-h-12",
-          )}
-        >
-          {rates.map((r) => (
-            <Tooltip key={r.id} delayDuration={150}>
-              <TooltipTrigger asChild>
-                <span
-                  className={cn(
-                    "inline-flex cursor-default items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-inset transition-colors hover:bg-muted/60",
-                    ratioTone(r.ratio),
-                  )}
-                >
-                  <span className="font-medium">{r.model_name}</span>
-                  <span className="rounded bg-primary/10 px-1 font-semibold tabular-nums text-primary ring-1 ring-inset ring-primary/15">
-                    {formatRatio(r.ratio)}
-                  </span>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-xs text-xs">
-                <p className="font-medium">{r.model_name}</p>
-                {r.description ? (
-                  <p className="mt-0.5 text-muted-foreground">{r.description}</p>
-                ) : (
-                  <p className="mt-0.5 italic text-muted-foreground">{"(无描述)"}</p>
-                )}
-                <p className="mt-0.5 text-muted-foreground">
-                  {"最近更新："}
-                  {relativeTime(r.last_seen_at)}
-                </p>
-              </TooltipContent>
-            </Tooltip>
+        <div className="flex flex-wrap gap-1 overflow-hidden">
+          {shown.map((r) => (
+            <span
+              key={r.id}
+              title={rateChipTitle(r)}
+              className={cn(
+                "inline-flex cursor-default items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-inset transition-colors hover:bg-muted/60",
+                ratioTone(r.ratio),
+              )}
+            >
+              <span className="font-medium">{r.model_name}</span>
+              <span className="rounded bg-primary/10 px-1 font-semibold tabular-nums text-primary ring-1 ring-inset ring-primary/15">
+                {formatRatio(r.ratio)}
+              </span>
+            </span>
           ))}
         </div>
-        {/* 折叠时底部淡出，提示还有更多内容 */}
-        {!expanded && hasOverflow ? (
+        {/* 折叠且还有更多时底部淡出，提示还有内容 */}
+        {!expanded && hasMore ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-background to-transparent" />
         ) : null}
       </div>
     </div>
   )
-}
+})
 
 interface ChannelGroupRow {
   key: string
@@ -342,26 +333,38 @@ function ChannelGroupsDialog({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dialogContentElement, setDialogContentElement] = useState<HTMLDivElement | null>(null)
+  const plugins = useConnectorPlugins()
+
+  const supportsAPIKeys = (type: string) =>
+    plugins.data?.some((plugin) => plugin.type === type && plugin.capabilities.includes("api_keys")) ??
+    false
 
   useEffect(() => {
     if (!open) return
+    if (channels.length === 0) {
+      setRows([])
+      return
+    }
     let cancelled = false
     setLoading(true)
     setError(null)
 
-    Promise.all(
-      channels.map(async (channel) => {
-        const rates = await apiFetch<RateSnapshot[]>(
-          `/channels/${channel.id}/rates${channel.only_created_key_groups_enabled ? "?only_with_keys=1" : ""}`,
-        )
-        return { channel, rates }
-      }),
-    )
-      .then((result) => {
+    // 走批量接口一次拿全：原先这里是 Promise.all 对每个渠道各发一次
+    // /channels/:id/rates，渠道一多就是几十个并发请求同时压后端和主线程。
+    const ids = channels.map((channel) => channel.id)
+    const onlyWithKeysIDs = channels
+      .filter((channel) => channel.only_created_key_groups_enabled)
+      .map((channel) => channel.id)
+    const path =
+      `/rates/batch?ids=${ids.join(",")}` +
+      (onlyWithKeysIDs.length > 0 ? `&only_with_keys=${onlyWithKeysIDs.join(",")}` : "")
+
+    apiFetch<Record<string, RateSnapshot[]>>(path)
+      .then((byChannel) => {
         if (cancelled) return
         setRows(
-          result.flatMap(({ channel, rates }) =>
-            rates.map((rate) => ({
+          channels.flatMap((channel) =>
+            (byChannel[String(channel.id)] ?? EMPTY_RATES).map((rate) => ({
               key: `${channel.id}-${rate.id}`,
               channel,
               rate,
@@ -388,7 +391,7 @@ function ChannelGroupsDialog({
         if (!q) return true
         return [
           channel.name,
-          channelTypeLabel(channel.type),
+          channelTypeLabel(channel.type, plugins.data),
           rate.model_name,
           rate.description ?? "",
           formatRatio(rate.ratio),
@@ -494,7 +497,7 @@ function ChannelGroupsDialog({
                             : "bg-sky-500/10 text-sky-700 ring-sky-500/25 dark:text-sky-300",
                         )}
                       >
-                        {channelTypeLabel(channel.type)}
+                        {channelTypeLabel(channel.type, plugins.data)}
                       </span>
                     </TableCell>
                     <TableCell className="min-w-40 whitespace-normal sm:min-w-60">
@@ -514,36 +517,38 @@ function ChannelGroupsDialog({
                       {relativeTime(rate.last_seen_at)}
                     </TableCell>
                     <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="touch-manipulation"
-                            aria-label="API Key 操作"
-                            title="API Key 操作"
+                      {supportsAPIKeys(channel.type) ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="touch-manipulation"
+                              aria-label="API Key 操作"
+                              title="API Key 操作"
+                            >
+                              <KeyRound className="size-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            portalContainer={dialogContentElement}
+                            align="end"
+                            sideOffset={6}
+                            className="z-[70]"
+                            onCloseAutoFocus={(event) => event.preventDefault()}
                           >
-                            <KeyRound className="size-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          portalContainer={dialogContentElement}
-                          align="end"
-                          sideOffset={6}
-                          className="z-[70]"
-                          onCloseAutoFocus={(event) => event.preventDefault()}
-                        >
-                          <DropdownMenuItem className="cursor-pointer py-2" onSelect={() => onAPIKeyAction(channel, rate, "create")}>
-                            <Plus className="size-4" />
-                            新建到此分组
-                          </DropdownMenuItem>
-                          <DropdownMenuItem className="cursor-pointer py-2" onSelect={() => onAPIKeyAction(channel, rate, "migrate")}>
-                            <ArrowRightLeft className="size-4" />
-                            将现有 API Key 移到此分组
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                            <DropdownMenuItem className="cursor-pointer py-2" onSelect={() => onAPIKeyAction(channel, rate, "create")}>
+                              <Plus className="size-4" />
+                              新建到此分组
+                            </DropdownMenuItem>
+                            <DropdownMenuItem className="cursor-pointer py-2" onSelect={() => onAPIKeyAction(channel, rate, "migrate")}>
+                              <ArrowRightLeft className="size-4" />
+                              将现有 API Key 移到此分组
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))
@@ -558,14 +563,27 @@ function ChannelGroupsDialog({
 
 interface ChannelSyncState {
   running: boolean
-  events: ProgressEvent[]
+  /**
+   * 每个 stage 的最新事件。
+   *
+   * 原先存的是 events: ProgressEvent[]（全部历史事件），但展示端 deriveSteps 只按 stage 去重留最后一条，
+   * 也就是说整个历史数组从来没被真正用到。批量同步时 N 个渠道 × 若干条事件会无限追加，
+   * 每条事件都 [...prev.events, ev] 复制一遍数组并触发整棵组件树重渲染，渠道一多浏览器就顶不住。
+   * 现在只留每个 stage 的最后一条（最多 9 个 key），既不会无限增长，复制成本也可忽略。
+   */
+  steps: Partial<Record<ProgressEvent["stage"], ProgressEvent>>
   latest: ProgressEvent | null
   finalOk: boolean | null
   fading: boolean
 }
 
-function emptySyncState(): ChannelSyncState {
-  return { running: false, events: [], latest: null, finalOk: null, fading: false }
+/** 稳定的空状态引用：避免每次渲染都新建对象让 SyncProgressStrip 白重渲染。 */
+const EMPTY_SYNC_STATE: ChannelSyncState = {
+  running: false,
+  steps: {},
+  latest: null,
+  finalOk: null,
+  fading: false,
 }
 
 interface BulkSyncState {
@@ -598,16 +616,16 @@ const stageOrder: Record<ProgressEvent["stage"], number> = {
   error: 9,
 }
 
-/** 按 stage 去重，每个 stage 只留最后一条事件（"在做中→完成"会被覆盖成完成态）。 */
-function deriveSteps(events: ProgressEvent[]): ProgressEvent[] {
-  const byStage = new Map<ProgressEvent["stage"], ProgressEvent>()
-  for (const ev of events) byStage.set(ev.stage, ev)
-  return [...byStage.values()].sort((a, b) => stageOrder[a.stage] - stageOrder[b.stage])
+/** 把 steps 记录按 stageOrder 排序成展示列表。 */
+function stepsInOrder(steps: ChannelSyncState["steps"]): ProgressEvent[] {
+  return Object.values(steps)
+    .filter((ev): ev is ProgressEvent => ev != null)
+    .sort((a, b) => stageOrder[a.stage] - stageOrder[b.stage])
 }
 
-function SyncProgressStrip({ state }: { state: ChannelSyncState }) {
+const SyncProgressStrip = memo(function SyncProgressStrip({ state }: { state: ChannelSyncState }) {
   if (!state.running && state.latest == null) return null
-  const steps = deriveSteps(state.events)
+  const steps = stepsInOrder(state.steps)
 
   return (
     <div
@@ -662,10 +680,17 @@ function SyncProgressStrip({ state }: { state: ChannelSyncState }) {
       )}
     </div>
   )
-}
+})
 
 export function ChannelCards() {
   const { data: channels, loading: channelsLoading } = useChannels()
+  const plugins = useConnectorPlugins()
+  const supports = (type: string, capability: string) =>
+    plugins.data?.some(
+      (plugin) =>
+        plugin.type === type &&
+        (plugin.capabilities as readonly string[]).includes(capability),
+    ) ?? false
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<ChannelPageSize>(loadChannelPageSize)
   // 搜索 / 筛选 / 排序都在后端完成，保证跨页结果正确；searchInput 是输入框的即时值，search 是防抖后的值。
@@ -730,6 +755,14 @@ export function ChannelCards() {
   const rangeStart = totalChannels === 0 ? 0 : (currentPage - 1) * effectivePageSize + 1
   const rangeEnd = Math.min((currentPage - 1) * effectivePageSize + visibleChannels.length, totalChannels)
   const pagerNumbers = pageNumbers(currentPage, totalPages)
+
+  // 当前这一页渠道的倍率一次批量拉回，替代原先"每张卡片各挂一个 useChannelRates"的 N 请求模式。
+  const visibleChannelIDs = useMemo(() => visibleChannels.map((c) => c.id), [visibleChannels])
+  const onlyWithKeysIDs = useMemo(
+    () => visibleChannels.filter((c) => c.only_created_key_groups_enabled).map((c) => c.id),
+    [visibleChannels],
+  )
+  const ratesBatch = useChannelRatesBatch(visibleChannelIDs, onlyWithKeysIDs)
 
   // 成功后自动消失需要的两段定时器：先 5s 显示，再 500ms 过渡（与 strip 的 transition-opacity duration-500 对齐）。
   const hideTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
@@ -804,27 +837,87 @@ export function ChannelCards() {
   }
 
   function patchSync(id: number, fn: (prev: ChannelSyncState) => ChannelSyncState) {
-    setSyncState((s) => ({ ...s, [id]: fn(s[id] ?? emptySyncState()) }))
+    setSyncState((s) => ({ ...s, [id]: fn(s[id] ?? EMPTY_SYNC_STATE) }))
   }
+
+  // SSE 事件合批：后端串行同步 N 个渠道，原先每条事件都 setState 一次，
+  // 每次都会让这个 1600 多行的组件全量重渲染（没有 memo 边界），渠道一多主线程直接顶满。
+  // 这里把 100ms 窗口内到达的事件攒起来，一次 setState 应用完。
+  const pendingSyncEvents = useRef<Map<number, ProgressEvent>>(new Map())
+  const flushHandle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 当前在跑的同步流（单卡或批量），用于卸载时中断。
+  const activeStream = useRef<AbortController | null>(null)
+
+  function flushPendingSync() {
+    if (flushHandle.current != null) {
+      clearTimeout(flushHandle.current)
+      flushHandle.current = null
+    }
+    const batch = pendingSyncEvents.current
+    if (batch.size === 0) return
+    pendingSyncEvents.current = new Map()
+
+    setSyncState((s) => {
+      const next = { ...s }
+      for (const [id, ev] of batch) {
+        const prev = next[id] ?? EMPTY_SYNC_STATE
+        const terminal = ev.stage === "done" || ev.stage === "error"
+        next[id] = {
+          ...prev,
+          steps: { ...prev.steps, [ev.stage]: ev },
+          latest: ev,
+          running: !terminal,
+          finalOk: ev.stage === "done" ? true : ev.stage === "error" ? false : prev.finalOk,
+          fading: false,
+        }
+      }
+      return next
+    })
+  }
+
+  function queueSyncEvent(ev: ProgressEvent) {
+    if (ev.channel_id == null) return
+    // 同一渠道只留最新一条待处理事件即可（steps 按 stage 合并，旧事件没有额外信息）
+    pendingSyncEvents.current.set(ev.channel_id, ev)
+    if (flushHandle.current == null) {
+      flushHandle.current = setTimeout(flushPendingSync, 100)
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (flushHandle.current != null) clearTimeout(flushHandle.current)
+      flushHandle.current = null
+      pendingSyncEvents.current.clear()
+      // 组件卸载时把还在跑的同步流掐掉，否则后端继续写、前端继续解析，
+      // 用户切到别的页面了主线程还在被这些帧占着。
+      activeStream.current?.abort()
+      activeStream.current = null
+    }
+  }, [])
 
   async function startStream(channel: Channel, action: "sync" | "test-login") {
     clearHideTimer(channel.id)
     patchSync(channel.id, () => ({
       running: true,
-      events: [],
+      steps: {},
       latest: null,
       finalOk: null,
       fading: false,
     }))
     let sawError = false
     const stream = action === "sync" ? syncChannelStream : testLoginStream
+    const controller = new AbortController()
+    activeStream.current?.abort()
+    activeStream.current = controller
     try {
       await stream(channel.id, {
+        signal: controller.signal,
         onEvent: (ev) => {
           if (ev.stage === "error" || ev.ok === false) sawError = true
           patchSync(channel.id, (prev) => ({
             ...prev,
-            events: [...prev.events, ev],
+            steps: { ...prev.steps, [ev.stage]: ev },
             latest: ev,
           }))
         },
@@ -839,18 +932,23 @@ export function ChannelCards() {
     } catch (e) {
       const err = e as Error
       const failureLabel = action === "sync" ? "同步失败" : "测试登录失败"
+      // 主动中断（切页 / 发起新的同步）不算失败，不写错误态。
+      if (controller.signal.aborted) return
+      const failureEvent: ProgressEvent = {
+        stage: "error",
+        message: err.message || failureLabel,
+        time: new Date().toISOString(),
+      }
       patchSync(channel.id, (prev) => ({
         ...prev,
         running: false,
         finalOk: false,
-        latest: {
-          stage: "error",
-          message: err.message || failureLabel,
-          time: new Date().toISOString(),
-        },
+        latest: failureEvent,
+        steps: { ...prev.steps, error: failureEvent },
       }))
       // 失败保留，不调度自动隐藏
     } finally {
+      if (activeStream.current === controller) activeStream.current = null
       refresh()
     }
   }
@@ -859,30 +957,29 @@ export function ChannelCards() {
     const list = channels ?? []
     if (list.length === 0) return
 
-    for (const channel of list) {
-      clearHideTimer(channel.id)
-      patchSync(channel.id, () => ({
-        running: true,
-        events: [],
-        latest: null,
-        finalOk: null,
-        fading: false,
-      }))
-    }
+    // 一次性把所有卡片置为 running（单次 setState，而不是 N 次 patchSync）
+    clearTimeout(flushHandle.current ?? undefined)
+    flushHandle.current = null
+    pendingSyncEvents.current.clear()
+    for (const channel of list) clearHideTimer(channel.id)
+    setSyncState(() => {
+      const next: Record<number, ChannelSyncState> = {}
+      for (const channel of list) {
+        next[channel.id] = { running: true, steps: {}, latest: null, finalOk: null, fading: false }
+      }
+      return next
+    })
 
     setBulkSync({ running: true, completed: 0, total: list.length })
+    const controller = new AbortController()
+    activeStream.current?.abort()
+    activeStream.current = controller
     try {
       await syncAllChannelsStream({
+        signal: controller.signal,
         onEvent: (ev) => {
           if (ev.channel_id != null) {
-            patchSync(ev.channel_id, (prev) => ({
-              ...prev,
-              events: [...prev.events, ev],
-              latest: ev,
-              running: ev.stage !== "done" && ev.stage !== "error",
-              finalOk: ev.stage === "done" ? true : ev.stage === "error" ? false : prev.finalOk,
-              fading: false,
-            }))
+            queueSyncEvent(ev)
             if (ev.stage === "done") {
               scheduleHide(ev.channel_id)
             }
@@ -907,8 +1004,11 @@ export function ChannelCards() {
       })
     } catch (e) {
       const err = e as Error
-      toast.error(err.message || "批量同步失败")
+      if (!controller.signal.aborted) toast.error(err.message || "批量同步失败")
     } finally {
+      if (activeStream.current === controller) activeStream.current = null
+      // 先把攒着的事件应用完，再统一收尾
+      flushPendingSync()
       setSyncState((s) => {
         const next: Record<number, ChannelSyncState> = {}
         for (const [id, state] of Object.entries(s)) {
@@ -1145,11 +1245,14 @@ export function ChannelCards() {
           </Button>
         </div>
       ) : (
-        // 新条件的结果到达前先展示旧列表并变暗；延迟 150ms 再变暗，响应快时不会闪一下
-        <div
-          aria-busy={pageStale}
-          className={cn("transition-opacity duration-200", pageStale && "opacity-60 delay-150")}
-        >
+        // 新条件的结果到达前先展示旧列表。
+        // 这里刻意不用整块 opacity 过渡：这个容器包着整张卡片网格，改 opacity 会让浏览器
+        // 把整层重新合成一遍；页面一长，每次筛选/刷新都等于全页重绘一次。
+        // 改成只在顶部给一个轻量的"更新中"提示，网格本身不动。
+        <div aria-busy={pageStale}>
+          {pageStale ? (
+            <p className="mb-1.5 text-[11px] text-muted-foreground">{"正在更新列表…"}</p>
+          ) : null}
           <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3">
             {visibleChannels.map((c) => {
               const status = statusOf(c)
@@ -1168,11 +1271,20 @@ export function ChannelCards() {
                               : "bg-sky-500/10 text-sky-700 ring-sky-500/25 dark:text-sky-300",
                           )}
                         >
-                          {channelTypeLabel(c.type)}
+                          {channelTypeLabel(c.type, plugins.data)}
                         </span>
                         {!c.monitor_enabled ? (
                           <span className="inline-flex items-center rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning ring-1 ring-inset ring-warning/20">
                             {"已暂停"}
+                          </span>
+                        ) : null}
+                        {/* 不采集分组倍率：卡片上标出来，否则"倍率一直是旧的"看起来像故障 */}
+                        {c.monitor_enabled && c.skip_rates_on_auto_refresh ? (
+                          <span
+                            className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-inset ring-border"
+                            title={"该渠道不采集分组倍率（定时扫描与「同步」都跳过），只更新额度"}
+                          >
+                            {"只取额度"}
                           </span>
                         ) : null}
                       </div>
@@ -1272,7 +1384,7 @@ export function ChannelCards() {
                         </div>
                       </StatTile>
                     ) : null}
-                    <ChannelSubscriptionUsageMetricTiles channel={c} />
+                    <ChannelSubscriptionUsageMetricTiles channel={c} plugins={plugins.data} />
                     {c.last_error ? (
                       <div className="col-span-3 rounded-md border border-border bg-muted/20 px-2.5 py-2">
                         <p className="max-h-16 overflow-y-auto whitespace-pre-wrap break-words pr-1 text-[11px] leading-4 text-danger" title={c.last_error}>
@@ -1282,7 +1394,7 @@ export function ChannelCards() {
                     ) : null}
                   </div>
 
-                  <InlineRates channel={c} />
+                  <InlineRates rates={ratesBatch.rates[c.id] ?? EMPTY_RATES} loading={ratesBatch.loading} />
 
                   <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
                     <Button
@@ -1307,33 +1419,39 @@ export function ChannelCards() {
                         <LogIn className="size-3" />
                         {"测试登录"}
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-1 text-xs"
-                      onClick={() => setRecharging(c)}
-                    >
-                      <CreditCard className="size-3" />
-                      {"充值"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-1 text-xs"
-                      onClick={() => setRedeeming(c)}
-                    >
-                      <Gift className="size-3" />
-                      {"兑换"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-1 text-xs"
-                      onClick={() => setAPIKeyDialog({ channel: c })}
-                    >
-                      <KeyRound className="size-3" />
-                      {"密钥"}
-                    </Button>
+                    {supports(c.type, "recharge") ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1 text-xs"
+                        onClick={() => setRecharging(c)}
+                      >
+                        <CreditCard className="size-3" />
+                        {"充值"}
+                      </Button>
+                    ) : null}
+                    {supports(c.type, "redeem") ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1 text-xs"
+                        onClick={() => setRedeeming(c)}
+                      >
+                        <Gift className="size-3" />
+                        {"兑换"}
+                      </Button>
+                    ) : null}
+                    {supports(c.type, "api_keys") ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1 text-xs"
+                        onClick={() => setAPIKeyDialog({ channel: c })}
+                      >
+                        <KeyRound className="size-3" />
+                        {"密钥"}
+                      </Button>
+                    ) : null}
                     <Button
                       variant="outline"
                       size="sm"
@@ -1348,7 +1466,7 @@ export function ChannelCards() {
                     </Button>
                   </div>
 
-                  <SyncProgressStrip state={syncState[c.id] ?? emptySyncState()} />
+                  <SyncProgressStrip state={syncState[c.id] ?? EMPTY_SYNC_STATE} />
 
                   <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-2.5">
                     <Button

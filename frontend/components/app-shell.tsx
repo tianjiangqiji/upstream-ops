@@ -3,6 +3,7 @@
 import { Outlet } from "react-router-dom"
 import { MonitorHeader } from "@/components/monitor/monitor-header"
 import { DockBar } from "@/components/monitor/dock-bar"
+import { TooltipProvider } from "@/components/ui/tooltip"
 
 /**
  * AppShell 是所有路由共享的外壳：顶部 header + 中间 Outlet（+ 可选底部 dock）。
@@ -14,18 +15,22 @@ const SHOW_DOCK = false
 
 export function AppShell() {
   return (
-    <div className="min-h-screen bg-background">
-      <MonitorHeader />
-      <main
-        className={
-          SHOW_DOCK
-            ? "mx-auto max-w-[120rem] space-y-4 px-3 py-3 pb-24 sm:space-y-5 sm:px-6 sm:py-5 lg:px-8"
-            : "mx-auto max-w-[120rem] space-y-4 px-3 py-3 sm:space-y-5 sm:px-6 sm:py-5 lg:px-8"
-        }
-      >
-        <Outlet />
-      </main>
-      {SHOW_DOCK ? <DockBar /> : null}
-    </div>
+    // 全站唯一的 TooltipProvider：避免每个 Tooltip 实例各建一份 Provider context。
+    // 单个 Tooltip 仍可用 delayDuration prop 覆盖这里的默认值。
+    <TooltipProvider delayDuration={150}>
+      <div className="min-h-screen bg-background">
+        <MonitorHeader />
+        <main
+          className={
+            SHOW_DOCK
+              ? "mx-auto max-w-[120rem] space-y-4 px-3 py-3 pb-24 sm:space-y-5 sm:px-6 sm:py-5 lg:px-8"
+              : "mx-auto max-w-[120rem] space-y-4 px-3 py-3 sm:space-y-5 sm:px-6 sm:py-5 lg:px-8"
+          }
+        >
+          <Outlet />
+        </main>
+        {SHOW_DOCK ? <DockBar /> : null}
+      </div>
+    </TooltipProvider>
   )
 }

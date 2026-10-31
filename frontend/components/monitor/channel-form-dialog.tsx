@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react"
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react"
 import { HelpCircle, X } from "lucide-react"
 import {
   Dialog,
@@ -27,11 +27,17 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import type { Channel, ChannelType, CredentialMode, RechargeMultiplierMode } from "@/lib/api-types"
+import type {
+  Channel,
+  ChannelType,
+  ConnectorTokenField,
+  CredentialMode,
+  RechargeMultiplierMode,
+} from "@/lib/api-types"
 import { apiFetch } from "@/lib/api"
 import { channelTagKey } from "@/lib/channel-tags"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import { useCaptchaConfigs } from "@/lib/queries"
+import { useCaptchaConfigs, useConnectorPlugins } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 
 interface ChannelFormDialogProps {
@@ -45,8 +51,7 @@ interface ChannelFormDialogProps {
  * FormState 是表单的所有可编辑字段。
  *
  * password 字段在 token 模式下不展示；
- * token 字段（cookie / user_id / access_token）在 password 模式下不展示。
- * 这些状态对应保留在内存里，方便用户来回切换不丢失输入。
+ * token 字段由当前插件声明的 token_fields 动态渲染，值单独存在 tokenValues 里。
  */
 interface FormState {
   name: string
@@ -58,21 +63,13 @@ interface FormState {
   login_extra_params: string
 
   credential_mode: CredentialMode
-  // NewAPI token 模式
-  // newapi_token_kind 决定用 Cookie 还是系统访问令牌走 NewAPI 鉴权
-  newapi_token_kind: "cookie" | "access_token"
-  newapi_cookie: string
-  newapi_access_token: string
-  newapi_user_id: string
-  // Sub2API token 模式
-  sub2api_access_token: string
-  sub2api_refresh_token: string
 
   balance_threshold: string
   recharge_multiplier: string
   recharge_multiplier_mode: RechargeMultiplierMode
   monitor_enabled: boolean
   only_created_key_groups_enabled: boolean
+  skip_rates_on_auto_refresh: boolean
   turnstile_enabled: boolean
   ignore_announcements: boolean
   subscription_enabled: boolean
@@ -126,17 +123,12 @@ function initialState(c?: Channel | null): FormState {
     password: "",
     login_extra_params: c?.login_extra_params ?? "",
     credential_mode: c?.credential_mode ?? "password",
-    newapi_token_kind: "cookie",
-    newapi_cookie: "",
-    newapi_access_token: "",
-    newapi_user_id: c?.type === "newapi" ? (c.user_id ?? "") : "",
-    sub2api_access_token: "",
-    sub2api_refresh_token: "",
     balance_threshold: c?.balance_threshold != null ? String(c.balance_threshold) : "0",
     recharge_multiplier: c?.recharge_multiplier != null ? String(c.recharge_multiplier) : "",
     recharge_multiplier_mode: rechargeMultiplierMode,
     monitor_enabled: c?.monitor_enabled ?? true,
     only_created_key_groups_enabled: c?.only_created_key_groups_enabled ?? false,
+    skip_rates_on_auto_refresh: c?.skip_rates_on_auto_refresh ?? false,
     turnstile_enabled: c?.turnstile_enabled ?? false,
     ignore_announcements: c?.ignore_announcements ?? false,
     subscription_enabled: c?.subscription_enabled ?? false,
@@ -148,51 +140,99 @@ function initialState(c?: Channel | null): FormState {
   }
 }
 
+/** tokenFieldValue 取某个 token 字段的输入值（去掉首尾空白）。 */
+function tokenFieldValue(values: Record<string, string>, key: string): string {
+  return (values[key] ?? "").trim()
+}
+
 /**
- * buildTokenCredential 把当前表单里的 token 字段序列化成后端期望的 JSON 字符串。
- * 字段命名与 channel/service.go 里的 NewAPITokenCredential / Sub2APITokenCredential 对齐。
+ * buildTokenCredential 把插件声明的 token 字段序列化成后端期望的 JSON 字符串。
+ * 字段 key 与 backend/connector 插件注册的 TokenFields 对齐，只提交非空字段。
  */
-function buildTokenCredential(form: FormState): string {
-  if (form.type === "newapi") {
-    if (form.newapi_token_kind === "access_token") {
-      return JSON.stringify({
-        access_token: form.newapi_access_token.trim(),
-        user_id: form.newapi_user_id.trim(),
-      })
-    }
-    return JSON.stringify({
-      cookie: form.newapi_cookie.trim(),
-      user_id: form.newapi_user_id.trim(),
-    })
+function buildTokenCredential(
+  fields: ConnectorTokenField[],
+  values: Record<string, string>,
+): string {
+  const out: Record<string, string> = {}
+  for (const field of fields) {
+    const value = tokenFieldValue(values, field.key)
+    if (value) out[field.key] = value
   }
-  const refreshToken = form.sub2api_refresh_token.trim()
-  return JSON.stringify({
-    access_token: form.sub2api_access_token.trim(),
-    ...(refreshToken ? { refresh_token: refreshToken } : {}),
-  })
+  return JSON.stringify(out)
+}
+
+/** validateTokenValues 前端预校验：required 字段必填、one_of 组内至少填一个。 */
+function validateTokenValues(
+  fields: ConnectorTokenField[],
+  values: Record<string, string>,
+): string | null {
+  const groups = new Map<string, ConnectorTokenField[]>()
+  for (const field of fields) {
+    if (field.required && !tokenFieldValue(values, field.key)) {
+      return `请填写 ${field.label}`
+    }
+    if (field.one_of) {
+      const list = groups.get(field.one_of) ?? []
+      list.push(field)
+      groups.set(field.one_of, list)
+    }
+  }
+  for (const list of groups.values()) {
+    if (!list.some((field) => tokenFieldValue(values, field.key))) {
+      return `请至少填写 ${list.map((field) => field.label).join(" / ")} 中的一个`
+    }
+  }
+  return null
 }
 
 export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDialogProps) {
   const [form, setForm] = useState<FormState>(() => initialState(channel))
+  const [tokenValues, setTokenValues] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const refresh = useTriggerRefresh()
   const captchas = useCaptchaConfigs(open)
+  const plugins = useConnectorPlugins()
 
   // 打开 / 切换目标渠道时重置表单。
   useEffect(() => {
     if (open) {
       setForm(initialState(channel))
+      setTokenValues({})
       setError(null)
     }
   }, [open, channel])
 
+  const pluginList = plugins.data ?? []
+  const currentPlugin = pluginList.find((p) => p.type === form.type)
+  const tokenFields = currentPlugin?.token_fields ?? []
+  const canSubscription = currentPlugin?.capabilities.includes("subscription") ?? false
+  const canAPIKeys = currentPlugin?.capabilities.includes("api_keys") ?? false
+  const canTurnstile = currentPlugin?.capabilities.includes("turnstile") ?? false
+  const canLoginExtraParams = currentPlugin?.capabilities.includes("login_extra_params") ?? false
+  const canAnnouncements = currentPlugin?.capabilities.includes("announcements") ?? false
+  const canRates = currentPlugin?.capabilities.includes("rates") ?? false
+
+  // 插件列表加载后：新建渠道默认选中第一个可用插件；编辑渠道回填 user_id 字段。
+  useEffect(() => {
+    if (!open) return
+    if (!channel && pluginList.length > 0 && !pluginList.some((p) => p.type === form.type)) {
+      setForm((prev) => ({ ...prev, type: pluginList[0].type }))
+      return
+    }
+    if (!channel || !currentPlugin) return
+    const userIDField = tokenFields.find((field) => field.target === "user_id")
+    const userID = (channel.user_id ?? "").trim()
+    if (!userIDField || !userID) return
+    setTokenValues((prev) =>
+      prev[userIDField.key] ? prev : { ...prev, [userIDField.key]: userID },
+    )
+  }, [open, channel, pluginList, currentPlugin, tokenFields, form.type])
+
   const isEdit = !!channel
   const isTokenMode = form.credential_mode === "token"
-  const supportsSubscription = form.type === "sub2api"
   // 编辑模式下，若 credential_mode 没变，token / password 都可以留空表示不修改。
   const modeChanged = isEdit && form.credential_mode !== (channel?.credential_mode ?? "password")
-  const existingNewAPIUserID = isEdit && channel?.type === "newapi" ? (channel.user_id ?? "").trim() : ""
   const notesLength = charLength(form.notes.trim())
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -242,48 +282,26 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
         }
       }
 
-      // token 模式：用户填的字段对应不同 connector 的 token JSON
+      // token 模式：按插件声明的字段序列化凭据；编辑时留空表示不修改。
       let tokenCredential = ""
       if (isTokenMode) {
-        if (form.type === "newapi") {
-          const credField =
-            form.newapi_token_kind === "access_token"
-              ? form.newapi_access_token.trim()
-              : form.newapi_cookie.trim()
-          const userID = form.newapi_user_id.trim()
-          const userIDChanged = isEdit ? userID !== existingNewAPIUserID : userID !== ""
-          if (!isEdit || modeChanged || credField || userIDChanged) {
-            if (!credField) {
-              throw new Error(
-                form.newapi_token_kind === "access_token"
-                  ? "NewAPI token 模式必须填写系统访问令牌"
-                  : "NewAPI token 模式必须填写 Cookie",
-              )
-            }
-            if (!userID) throw new Error("NewAPI token 模式必须填写 User ID")
+        const filled = tokenFields.some(
+          (field) =>
+            field.target !== "user_id" && tokenFieldValue(tokenValues, field.key),
+        )
+        const userIDChanged = tokenFields
+          .filter((field) => field.target === "user_id")
+          .some(
+            (field) =>
+              tokenFieldValue(tokenValues, field.key) !== (channel?.user_id ?? "").trim(),
+          )
+        if (!isEdit || modeChanged || filled || userIDChanged) {
+          if (tokenFields.length === 0) {
+            throw new Error("当前渠道类型未声明 Token 字段，请改用账号密码模式")
           }
-        } else {
-          if (!isEdit || modeChanged || form.sub2api_access_token || form.sub2api_refresh_token) {
-            if (!form.sub2api_access_token.trim())
-              throw new Error("Sub2API token 模式必须填写 Access Token")
-          }
-        }
-        // 只在用户填写了字段、或者首次创建、或者切换模式时下发 token_credential
-        const newapiCredFilled =
-          form.newapi_token_kind === "access_token"
-            ? form.newapi_access_token
-            : form.newapi_cookie
-        const newapiUserIDChanged =
-          form.type === "newapi" && form.newapi_user_id.trim() !== existingNewAPIUserID
-        if (
-          !isEdit ||
-          modeChanged ||
-          newapiCredFilled ||
-          newapiUserIDChanged ||
-          form.sub2api_access_token ||
-          form.sub2api_refresh_token
-        ) {
-          tokenCredential = buildTokenCredential(form)
+          const invalid = validateTokenValues(tokenFields, tokenValues)
+          if (invalid) throw new Error(invalid)
+          tokenCredential = buildTokenCredential(tokenFields, tokenValues)
         }
       }
 
@@ -314,9 +332,10 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           recharge_multiplier_mode: form.recharge_multiplier_mode,
           monitor_enabled: form.monitor_enabled,
           only_created_key_groups_enabled: form.only_created_key_groups_enabled,
-          turnstile_enabled: !isTokenMode && form.turnstile_enabled,
+          skip_rates_on_auto_refresh: canRates && form.skip_rates_on_auto_refresh,
+          turnstile_enabled: !isTokenMode && canTurnstile && form.turnstile_enabled,
           ignore_announcements: form.ignore_announcements,
-          subscription_enabled: supportsSubscription && form.subscription_enabled,
+          subscription_enabled: canSubscription && form.subscription_enabled,
           proxy_enabled: form.proxy_enabled,
           captcha_config_id: captchaConfigID,
           tags,
@@ -346,9 +365,10 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
             recharge_multiplier_mode: form.recharge_multiplier_mode,
             monitor_enabled: form.monitor_enabled,
             only_created_key_groups_enabled: form.only_created_key_groups_enabled,
-            turnstile_enabled: !isTokenMode && form.turnstile_enabled,
+            skip_rates_on_auto_refresh: canRates && form.skip_rates_on_auto_refresh,
+            turnstile_enabled: !isTokenMode && canTurnstile && form.turnstile_enabled,
             ignore_announcements: form.ignore_announcements,
-            subscription_enabled: supportsSubscription && form.subscription_enabled,
+            subscription_enabled: canSubscription && form.subscription_enabled,
             proxy_enabled: form.proxy_enabled,
             captcha_config_id: captchaConfigID,
             tags,
@@ -409,15 +429,27 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
               disabled={isEdit || submitting}
             >
               <SelectTrigger id="type" className="w-full">
-                <SelectValue />
+                <SelectValue placeholder={plugins.loading ? "加载插件…" : "选择系统类型"} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="sub2api">Sub2API</SelectItem>
-                <SelectItem value="newapi">NewAPI</SelectItem>
+                {pluginList.length > 0 ? (
+                  pluginList.map((plugin) => (
+                    <SelectItem key={plugin.type} value={plugin.type}>
+                      {plugin.name}
+                    </SelectItem>
+                  ))
+                ) : (
+                  <>
+                    <SelectItem value="sub2api">Sub2API</SelectItem>
+                    <SelectItem value="newapi">NewAPI</SelectItem>
+                  </>
+                )}
               </SelectContent>
             </Select>
             {isEdit ? (
               <p className="text-[11px] text-muted-foreground">类型创建后不可修改</p>
+            ) : currentPlugin?.description ? (
+              <p className="text-[11px] text-muted-foreground">{currentPlugin.description}</p>
             ) : null}
           </div>
 
@@ -556,153 +588,41 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
                 </p>
               </div>
 
-              {form.type === "newapi" ? (
+              {tokenFields.length > 0 ? (
                 <>
-                  <div className="space-y-1.5">
-                    <Label>鉴权方式</Label>
-                    <div className="grid grid-cols-1 gap-2 rounded-lg border border-border p-1 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        disabled={submitting}
-                        onClick={() => setForm({ ...form, newapi_token_kind: "cookie" })}
-                        className={cn(
-                          "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                          form.newapi_token_kind === "cookie"
-                            ? "bg-foreground text-background"
-                            : "text-muted-foreground hover:bg-muted",
-                        )}
-                      >
-                        Cookie (session)
-                      </button>
-                      <button
-                        type="button"
-                        disabled={submitting}
-                        onClick={() => setForm({ ...form, newapi_token_kind: "access_token" })}
-                        className={cn(
-                          "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                          form.newapi_token_kind === "access_token"
-                            ? "bg-foreground text-background"
-                            : "text-muted-foreground hover:bg-muted",
-                        )}
-                      >
-                        系统访问令牌
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      {form.newapi_token_kind === "access_token"
-                        ? "对应 NewAPI 个人设置页生成的「系统访问令牌」(user.access_token)，请求走 Authorization 头。"
-                        : "浏览器登录后的整段 Cookie，典型形如 session=MTc4...; ..."}
-                    </p>
-                  </div>
-
-                  {form.newapi_token_kind === "cookie" ? (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="newapi-cookie">Cookie</Label>
-                        <NewAPITokenHelp kind="cookie" />
-                      </div>
-                      <Textarea
-                        id="newapi-cookie"
-                        placeholder={
-                          isEdit
-                            ? "留空 = 不修改；填写则覆盖原 token"
-                            : "粘贴整段 Cookie 字符串，例：session=...; ..."
-                        }
-                        value={form.newapi_cookie}
-                        onChange={(e) => setForm({ ...form, newapi_cookie: e.target.value })}
-                        rows={3}
-                        className="field-sizing-fixed text-xs font-mono break-all"
-                        disabled={submitting}
-                      />
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="newapi-access-token">系统访问令牌</Label>
-                        <NewAPITokenHelp kind="access_token" />
-                      </div>
-                      <Textarea
-                        id="newapi-access-token"
-                        placeholder={
-                          isEdit
-                            ? "留空 = 不修改；填写则覆盖原令牌"
-                            : "粘贴 NewAPI 生成的 32 位系统访问令牌"
-                        }
-                        value={form.newapi_access_token}
-                        onChange={(e) =>
-                          setForm({ ...form, newapi_access_token: e.target.value })
-                        }
-                        rows={3}
-                        className="field-sizing-fixed text-xs font-mono break-all"
-                        disabled={submitting}
-                      />
-                    </div>
-                  )}
-
-                  <div className="space-y-1.5">
-                    <Label htmlFor="newapi-user-id">User ID</Label>
-                    <Input
-                      id="newapi-user-id"
-                      placeholder={
-                        isEdit
-                          ? "留空 = 不修改；NewAPI 个人设置页可见"
-                          : "整数，NewAPI 个人设置页可见"
+                  <TokenFieldsEditor
+                    fields={tokenFields}
+                    values={tokenValues}
+                    onChange={(key, value) =>
+                      setTokenValues((prev) => ({ ...prev, [key]: value }))
+                    }
+                    isEdit={isEdit}
+                    submitting={submitting}
+                    renderHelp={(field) => {
+                      if (currentPlugin?.type === "newapi") {
+                        if (field.key === "cookie") return <NewAPITokenHelp kind="cookie" />
+                        if (field.key === "access_token")
+                          return <NewAPITokenHelp kind="access_token" />
                       }
-                      value={form.newapi_user_id}
-                      onChange={(e) => setForm({ ...form, newapi_user_id: e.target.value })}
-                      disabled={submitting}
-                    />
-                  </div>
+                      if (currentPlugin?.type === "sub2api" && field.key === "access_token") {
+                        return <Sub2APITokenHelp />
+                      }
+                      return null
+                    }}
+                  />
+                  {currentPlugin?.token_hint ? (
+                    <p className="text-[11px] text-muted-foreground">{currentPlugin.token_hint}</p>
+                  ) : null}
                 </>
-              ) : null}
-
-              {form.type === "sub2api" ? (
-                <div className="space-y-3">
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <Label htmlFor="sub2api-token">Access Token</Label>
-                      <Sub2APITokenHelp />
-                    </div>
-                    <Textarea
-                      id="sub2api-token"
-                      placeholder={
-                        isEdit
-                          ? "留空 = 不修改；填写则覆盖原 token"
-                          : "粘贴 access_token"
-                      }
-                      value={form.sub2api_access_token}
-                      onChange={(e) =>
-                        setForm({ ...form, sub2api_access_token: e.target.value })
-                      }
-                      rows={3}
-                      className="field-sizing-fixed text-xs font-mono break-all"
-                      disabled={submitting}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="sub2api-refresh-token">Refresh Token</Label>
-                    <Textarea
-                      id="sub2api-refresh-token"
-                      placeholder={
-                        isEdit
-                          ? "留空 = 不修改；如填写需同时填写 Access Token"
-                          : "粘贴 refresh_token（建议填写，用于后续续期）"
-                      }
-                      value={form.sub2api_refresh_token}
-                      onChange={(e) =>
-                        setForm({ ...form, sub2api_refresh_token: e.target.value })
-                      }
-                      rows={3}
-                      className="field-sizing-fixed text-xs font-mono break-all"
-                      disabled={submitting}
-                    />
-                  </div>
-                </div>
-              ) : null}
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  当前插件未声明 Token 字段，请使用账号密码模式。
+                </p>
+              )}
             </>
           ) : null}
 
-          {!isTokenMode ? (
+          {!isTokenMode && canLoginExtraParams ? (
             <div className="space-y-1.5">
               <Label htmlFor="login-extra-params">附加表单参数</Label>
               <Textarea
@@ -778,33 +698,53 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-            <div>
-              <p className="text-sm font-medium">仅显示已创建密钥的分组</p>
-              <p className="text-xs text-muted-foreground">
-                开启后渠道卡片 / 分组对话框 / 倍率变动通知只关注已创建密钥的分组；网关与通知设置仍可看全部分组
-              </p>
+          {canRates ? (
+            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <div>
+                <p className="text-sm font-medium">{"不采集分组倍率（只取额度）"}</p>
+                <p className="text-xs text-muted-foreground">
+                  {"开启后定时扫描和卡片上的「同步」都不再拉分组倍率（顺带不再同步公告），只更新余额、消费与订阅用量；已存的倍率保持原样可读"}
+                </p>
+              </div>
+              <Switch
+                checked={form.skip_rates_on_auto_refresh}
+                onCheckedChange={(v) => setForm({ ...form, skip_rates_on_auto_refresh: v })}
+                disabled={submitting || !form.monitor_enabled}
+              />
             </div>
-            <Switch
-              checked={form.only_created_key_groups_enabled}
-              onCheckedChange={(v) => setForm({ ...form, only_created_key_groups_enabled: v })}
-              disabled={submitting}
-            />
-          </div>
+          ) : null}
 
-          <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-            <div>
-              <p className="text-sm font-medium">忽略公告</p>
-              <p className="text-xs text-muted-foreground">开启后不会拉取该渠道公告</p>
+          {canAPIKeys ? (
+            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <div>
+                <p className="text-sm font-medium">仅显示已创建密钥的分组</p>
+                <p className="text-xs text-muted-foreground">
+                  开启后渠道卡片 / 分组对话框 / 倍率变动通知只关注已创建密钥的分组；网关与通知设置仍可看全部分组
+                </p>
+              </div>
+              <Switch
+                checked={form.only_created_key_groups_enabled}
+                onCheckedChange={(v) => setForm({ ...form, only_created_key_groups_enabled: v })}
+                disabled={submitting}
+              />
             </div>
-            <Switch
-              checked={form.ignore_announcements}
-              onCheckedChange={(v) => setForm({ ...form, ignore_announcements: v })}
-              disabled={submitting}
-            />
-          </div>
+          ) : null}
 
-          {supportsSubscription ? (
+          {canAnnouncements ? (
+            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <div>
+                <p className="text-sm font-medium">忽略公告</p>
+                <p className="text-xs text-muted-foreground">开启后不会拉取该渠道公告</p>
+              </div>
+              <Switch
+                checked={form.ignore_announcements}
+                onCheckedChange={(v) => setForm({ ...form, ignore_announcements: v })}
+                disabled={submitting}
+              />
+            </div>
+          ) : null}
+
+          {canSubscription ? (
             <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
               <div>
                 <p className="text-sm font-medium">启用订阅购买</p>
@@ -831,7 +771,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           </div>
 
           {/* Turnstile / 打码：token 模式下整段不展示 */}
-          {!isTokenMode ? (
+          {!isTokenMode && canTurnstile ? (
             <>
               <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
                 <div>
@@ -1000,6 +940,73 @@ function TagsInput({ id, tags, input, onChange, disabled }: TagsInputProps) {
     </div>
   )
 }
+
+interface TokenFieldsEditorProps {
+  fields: ConnectorTokenField[]
+  values: Record<string, string>
+  onChange: (key: string, value: string) => void
+  isEdit?: boolean
+  submitting?: boolean
+  renderHelp?: (field: ConnectorTokenField) => ReactNode
+}
+
+/**
+ * TokenFieldsEditor 按插件声明的 token_fields 动态渲染输入项。
+ * 编辑模式下所有字段都可以留空表示「不修改」，提交时由父组件决定是否整体覆盖。
+ */
+function TokenFieldsEditor({
+  fields,
+  values,
+  onChange,
+  isEdit,
+  submitting,
+  renderHelp,
+}: TokenFieldsEditorProps) {
+  return (
+    <>
+      {fields.map((field) => {
+        const id = `token-field-${field.key}`
+        const placeholder = isEdit
+          ? "留空则不修改"
+          : (field.placeholder ?? "")
+        return (
+          <div key={field.key} className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor={id}>
+                {field.label}
+                {field.required ? <span className="text-destructive"> *</span> : null}
+              </Label>
+              {renderHelp?.(field)}
+            </div>
+            {field.secret ? (
+              <Textarea
+                id={id}
+                value={values[field.key] ?? ""}
+                onChange={(e) => onChange(field.key, e.target.value)}
+                placeholder={placeholder}
+                rows={3}
+                className="field-sizing-fixed text-xs font-mono"
+                disabled={submitting}
+              />
+            ) : (
+              <Input
+                id={id}
+                value={values[field.key] ?? ""}
+                onChange={(e) => onChange(field.key, e.target.value)}
+                placeholder={placeholder}
+                disabled={submitting}
+              />
+            )}
+            {field.help ? (
+              <p className="text-[11px] text-muted-foreground">{field.help}</p>
+            ) : null}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 
 function NewAPITokenHelp({ kind = "cookie" }: { kind?: "cookie" | "access_token" }) {
   return (

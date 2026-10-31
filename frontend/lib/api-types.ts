@@ -3,7 +3,46 @@
  * Keep in sync with backend/storage/*.go and backend/api/*.go.
  */
 
-export type ChannelType = "newapi" | "sub2api"
+/** 渠道类型：由编译期注册的插件决定，前端不再写死枚举。 */
+export type ChannelType = string
+
+/** 渠道插件声明的能力位；前端据此显示/隐藏操作入口。与 backend/connector/plugin.go 对齐。 */
+export type ConnectorCapability =
+  | "login"
+  | "token_credential"
+  | "turnstile"
+  | "login_extra_params"
+  | "balance"
+  | "costs"
+  | "rates"
+  | "announcements"
+  | "redeem"
+  | "recharge"
+  | "subscription"
+  | "subscription_usage"
+  | "api_keys"
+
+/** token 模式下由插件声明的一个凭据字段。 */
+export interface ConnectorTokenField {
+  key: string
+  label: string
+  placeholder?: string
+  help?: string
+  required: boolean
+  secret: boolean
+  target: string
+  one_of?: string
+}
+
+/** 编译期注册的渠道插件（GET /api/connector-plugins）。 */
+export interface ConnectorPlugin {
+  type: string
+  name: string
+  description: string
+  capabilities: ConnectorCapability[]
+  token_fields?: ConnectorTokenField[]
+  token_hint?: string
+}
 
 export type CredentialMode = "password" | "token"
 
@@ -61,6 +100,8 @@ export interface Channel {
   recharge_multiplier_mode: RechargeMultiplierMode
   monitor_enabled: boolean
   only_created_key_groups_enabled: boolean
+  /** 定时刷新只取额度、不取分组倍率；旧后端可能缺失，按 false 处理 */
+  skip_rates_on_auto_refresh?: boolean
   /** 自定义标签；旧后端可能缺失，按空数组处理 */
   tags?: string[]
   /** 备注；缺失按空字符串处理 */

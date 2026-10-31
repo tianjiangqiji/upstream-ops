@@ -6,7 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useChannels, useChannelRates } from "@/lib/queries"
+import { useChannels, useChannelRates, useConnectorPlugins } from "@/lib/queries"
 import { channelTypeLabel, formatRatio, relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { Channel } from "@/lib/api-types"
@@ -27,6 +27,7 @@ function ratioTone(r: number): string {
 
 function ChannelRateRow({ channel }: { channel: Channel }) {
   const { data, loading } = useChannelRates(channel.id, channel.only_created_key_groups_enabled)
+  const plugins = useConnectorPlugins()
   const rates = [...(data ?? [])].sort((a, b) => a.ratio - b.ratio)
   const latest = rates[0]?.last_seen_at
 
@@ -44,7 +45,7 @@ function ChannelRateRow({ channel }: { channel: Channel }) {
                 : "bg-foreground/5 text-foreground ring-border",
             )}
           >
-            {channelTypeLabel(channel.type)}
+            {channelTypeLabel(channel.type, plugins.data)}
           </span>
         </div>
         <span className="text-[11px] text-muted-foreground">

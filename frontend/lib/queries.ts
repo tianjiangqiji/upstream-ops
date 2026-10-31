@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { apiFetch } from "@/lib/api"
 import { useRefreshTick } from "@/lib/refresh-context"
 import type {
@@ -12,6 +12,7 @@ import type {
   ChannelListSort,
   ChannelListStatus,
   ChannelPage,
+  ConnectorPlugin,
   CostTrendPoint,
   DashboardSummary,
   GatewayUsageStats,
@@ -54,8 +55,34 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>()
 const CACHE_TTL_MS = 800
 
+/**
+ * cache 的硬上限。
+ *
+ * key 里带了 tick / bump，每次全局刷新（30s 一次，或点任意按钮触发 refresh()）都会换一批新 key，
+ * 旧 key 的条目永远不会再被命中。原先只 set 不 delete，等于每 30 秒往 Map 里塞一批死数据：
+ * 渠道卡片的倍率请求按渠道数增长，页面挂几小时就是几千上万条，内存单调上涨直到标签页卡死。
+ * 这里既清过期项，也在超限时按插入顺序淘汰最老的条目。
+ */
+const CACHE_MAX_ENTRIES = 200
+
 function cacheKey(path: string, tick: number, bump: number) {
   return `${path}#${tick}#${bump}`
+}
+
+function storeCache(key: string, data: unknown) {
+  cache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS })
+  if (cache.size <= CACHE_MAX_ENTRIES) return
+
+  const now = Date.now()
+  for (const [k, v] of cache) {
+    if (v.expiresAt <= now) cache.delete(k)
+  }
+  // Map 保持插入顺序，从最老的开始丢。
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next()
+    if (oldest.done) break
+    cache.delete(oldest.value)
+  }
 }
 
 function fetchShared<T>(path: string, key: string): Promise<T> {
@@ -71,7 +98,7 @@ function fetchShared<T>(path: string, key: string): Promise<T> {
 
   const p = apiFetch<T>(path)
     .then((d) => {
-      cache.set(key, { data: d, expiresAt: Date.now() + CACHE_TTL_MS })
+      storeCache(key, d)
       return d
     })
     .finally(() => {
@@ -176,6 +203,11 @@ export function useCostTrend(days = 7) {
   return useApi<CostTrendPoint[]>(`/dashboard/cost-trend?days=${days}`)
 }
 
+/** 编译期注册的渠道插件清单（含能力位与 token 字段声明）。 */
+export function useConnectorPlugins() {
+  return useApi<ConnectorPlugin[]>("/connector-plugins")
+}
+
 export function useChannels() {
   return useApi<Channel[]>("/channels")
 }
@@ -238,6 +270,56 @@ export function useChannelRates(channelID: number | null, onlyWithKeys = false) 
         ? `/channels/${channelID}/rates?only_with_keys=1`
         : `/channels/${channelID}/rates`
   return useApi<RateSnapshot[]>(path)
+}
+
+/** 倍率空结果的稳定引用：避免每次渲染都新建 [] 让 memo 组件白重渲染。 */
+export const EMPTY_RATES: RateSnapshot[] = []
+
+export interface ChannelRatesBatchState {
+  /** channelID → 该渠道的倍率快照；没有数据的渠道返回 EMPTY_RATES。 */
+  rates: Record<number, RateSnapshot[]>
+  loading: boolean
+  error: string | null
+}
+
+/**
+ * useChannelRatesBatch 一次拉回多个渠道的倍率快照（/rates/batch）。
+ *
+ * 渠道卡片网格原先给每张卡片各挂一个 useChannelRates：一屏 N 张卡片 = N 个请求，
+ * 每 30s 刷新 tick 再全部重发一遍；N 大时浏览器连接池被打满，主线程光是排队解析响应就卡。
+ * 现在整个网格只发一个请求。
+ *
+ * channelIDs 按升序排序后再拼进 URL，保证同一批渠道得到同一个 path，能命中 fetchShared 去重。
+ * onlyWithKeysIDs 是"仅显示已创建密钥的分组"开关打开的渠道，语义与单渠道接口的 ?only_with_keys=1 一致。
+ */
+export function useChannelRatesBatch(
+  channelIDs: number[],
+  onlyWithKeysIDs: number[] = [],
+): ChannelRatesBatchState {
+  const idsKey = channelIDs.slice().sort((a, b) => a - b).join(",")
+  const keysKey = onlyWithKeysIDs
+    .filter((id) => channelIDs.includes(id))
+    .slice()
+    .sort((a, b) => a - b)
+    .join(",")
+  const path =
+    idsKey === ""
+      ? null
+      : `/rates/batch?ids=${idsKey}${keysKey ? `&only_with_keys=${keysKey}` : ""}`
+  const query = useApi<Record<string, RateSnapshot[]>>(path)
+  const data = query.data
+
+  const rates = useMemo(() => {
+    const out: Record<number, RateSnapshot[]> = {}
+    for (const id of channelIDs) {
+      const list = data?.[String(id)]
+      out[id] = list && list.length > 0 ? list : EMPTY_RATES
+    }
+    return out
+    // idsKey 已覆盖 channelIDs 的内容；data 引用变化才需要重建
+  }, [data, idsKey])
+
+  return { rates, loading: query.loading, error: query.error }
 }
 
 // useMultiChannelRates 把多个上游渠道的倍率分组拉回来合并去重，

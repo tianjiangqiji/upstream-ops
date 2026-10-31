@@ -19,12 +19,14 @@ import {
 } from "@/components/ui/tooltip"
 import { apiFetch } from "@/lib/api"
 import { channelTypeLabel, dateTime, decimal } from "@/lib/format"
+import { useConnectorPlugins } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import type {
   Channel,
   ChannelSubscriptionUsage,
   ChannelSubscriptionUsageInfo,
   ChannelSubscriptionUsageWindow,
+  ConnectorPlugin,
 } from "@/lib/api-types"
 
 interface ChannelSubscriptionUsageDialogProps {
@@ -107,7 +109,12 @@ function lowestWindow(items: ChannelSubscriptionUsage[], key: "daily" | "weekly"
 }
 
 export function ChannelSubscriptionUsageSummary({ channel }: { channel: Channel }) {
-  const supported = channel.type === "sub2api" && !!channel.subscription_enabled
+  const plugins = useConnectorPlugins()
+  const supportsUsage =
+    plugins.data?.some(
+      (plugin) => plugin.type === channel.type && plugin.capabilities.includes("subscription_usage"),
+    ) ?? false
+  const supported = supportsUsage && !!channel.subscription_enabled
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [usage, setUsage] = useState<ChannelSubscriptionUsageInfo | null>(null)
@@ -176,8 +183,24 @@ export function ChannelSubscriptionUsageSummary({ channel }: { channel: Channel 
   )
 }
 
-export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Channel }) {
-  const supported = channel.type === "sub2api"
+export function ChannelSubscriptionUsageMetricTiles({
+  channel,
+  plugins,
+}: {
+  channel: Channel
+  /**
+   * 插件能力清单由父组件传入。
+   *
+   * 原先这里自己调 useConnectorPlugins()：一屏 N 张卡片就是 N 个 useApi 实例
+   * （每个都带 5 个 useState + 一个 effect），父组件一次刷新就让它们全部重跑一遍。
+   * 插件清单本来就是全局常量，传下来即可。
+   */
+  plugins: ConnectorPlugin[] | null | undefined
+}) {
+  const supported =
+    plugins?.some(
+      (plugin) => plugin.type === channel.type && plugin.capabilities.includes("subscription_usage"),
+    ) ?? false
   const enabled = supported && !!channel.subscription_enabled
   const [loading, setLoading] = useState(false)
   const [usage, setUsage] = useState<ChannelSubscriptionUsageInfo | null>(null)

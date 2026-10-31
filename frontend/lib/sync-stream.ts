@@ -35,38 +35,51 @@ export interface SyncOptions {
 /**
  * streamSSE 通用 SSE 读取器：POST 指定 path，逐条消费 data 帧。
  * 401 → 触发全局登出回调；其他非 2xx 抛错。
+ *
+ * 关于取消：调用方传进来的 signal 只 abort 掉 fetch 本身，底层 reader 不会自动释放，
+ * 服务端还在往外写、浏览器还在收，主线程就一直有帧要解析（批量同步 N 个渠道时尤其明显）。
+ * 这里额外持有一个内部 AbortController：外部 abort 时一并触发，finally 里再 reader.cancel()，
+ * 保证流真正断掉。
  */
 async function streamSSE(
   path: string,
   { onEvent, signal }: SyncOptions,
 ): Promise<void> {
   const token = getToken()
-  const res = await fetch(path, {
-    method: "POST",
-    headers: {
-      Accept: "text/event-stream",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    signal,
-  })
-
-  if (res.status === 401) {
-    notifyUnauthorized()
-    throw new Error("未登录或会话已过期")
-  }
-  if (!res.ok) {
-    const body = await res.text().catch(() => "")
-    throw new Error(`${path} 请求失败 (${res.status}): ${body || res.statusText}`)
-  }
-  if (!res.body) {
-    throw new Error("浏览器不支持流式响应")
+  const controller = new AbortController()
+  const onExternalAbort = () => controller.abort(signal?.reason)
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason)
+    else signal.addEventListener("abort", onExternalAbort, { once: true })
   }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder("utf-8")
-  let buf = ""
-
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
   try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal: controller.signal,
+    })
+
+    if (res.status === 401) {
+      notifyUnauthorized()
+      throw new Error("未登录或会话已过期")
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "")
+      throw new Error(`${path} 请求失败 (${res.status}): ${body || res.statusText}`)
+    }
+    if (!res.body) {
+      throw new Error("浏览器不支持流式响应")
+    }
+
+    reader = res.body.getReader()
+    const decoder = new TextDecoder("utf-8")
+    let buf = ""
+
     while (true) {
       const { value, done } = await reader.read()
       if (done) {
@@ -82,7 +95,12 @@ async function streamSSE(
       }
     }
   } finally {
-    reader.releaseLock()
+    if (signal) signal.removeEventListener("abort", onExternalAbort)
+    if (reader) {
+      // 先 cancel 再 releaseLock：只 releaseLock 的话底层流还活着，后续帧仍会到达。
+      await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
+    }
   }
 }
 

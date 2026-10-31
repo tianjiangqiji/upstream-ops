@@ -17,6 +17,7 @@ import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { apiFetch } from "@/lib/api"
 import { channelTypeLabel, dateTime, decimal } from "@/lib/format"
+import { useConnectorPlugins } from "@/lib/queries"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 import type {
@@ -214,7 +215,12 @@ export function ChannelRechargeDialog({
   channel,
 }: ChannelRechargeDialogProps) {
   const isMobile = useIsMobile()
-  const subscriptionEnabled = channel?.type === "sub2api" && !!channel?.subscription_enabled
+  const plugins = useConnectorPlugins()
+  const subscriptionEnabled =
+    (plugins.data?.some(
+      (plugin) =>
+        plugin.type === channel?.type && plugin.capabilities.includes("subscription"),
+    ) ?? false) && !!channel?.subscription_enabled
   const channelID = channel?.id ?? null
   const [activeTab, setActiveTab] = useState<ActiveTab>("recharge")
   const [loading, setLoading] = useState(false)

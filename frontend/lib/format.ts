@@ -139,14 +139,17 @@ export function ratioDelta(from: number | null | undefined, to: number) {
   return { direction, pct: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%` }
 }
 
-/** 把 ChannelType "newapi"/"sub2api" 转成显示名 / 角标颜色。 */
-export function channelTypeLabel(t: string) {
+/** 把渠道类型转成显示名；未知类型优先用插件注册的显示名，最后回退原值。 */
+export function channelTypeLabel(
+  t: string,
+  plugins?: { type: string; name: string }[] | null,
+) {
   switch (t) {
     case "newapi":
       return "NewAPI"
     case "sub2api":
       return "Sub2API"
     default:
-      return t
+      return plugins?.find((p) => p.type === t)?.name ?? t
   }
 }
