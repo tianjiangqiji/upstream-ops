@@ -31,6 +31,7 @@ func init() {
 				connector.CapLoginExtraParams,
 				connector.CapBalance,
 				connector.CapCosts,
+				connector.CapUsageStatsCosts,
 				connector.CapRates,
 				connector.CapAnnouncements,
 				connector.CapRedeem,
@@ -249,6 +250,9 @@ func (c *Client) GetBalance(ctx context.Context, ch *connector.Channel, session 
 }
 
 func (c *Client) GetCosts(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) (*connector.CostResult, error) {
+	if ch.UseUsageStatsForCosts {
+		return c.getUsageStatsCosts(ctx, ch, session, time.Now())
+	}
 	body, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/v1/usage/dashboard/stats", session)
 	if err != nil {
 		return nil, fmt.Errorf("sub2api dashboard stats: %w", err)

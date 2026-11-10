@@ -14,6 +14,7 @@ export type ConnectorCapability =
   | "login_extra_params"
   | "balance"
   | "costs"
+  | "usage_stats_costs"
   | "rates"
   | "announcements"
   | "redeem"
@@ -98,6 +99,8 @@ export interface Channel {
   balance_threshold: number
   recharge_multiplier?: number | null
   recharge_multiplier_mode: RechargeMultiplierMode
+  /** Sub2API 使用记录统计接口获取消费；缺失按 false 处理 */
+  use_usage_stats_for_costs?: boolean
   monitor_enabled: boolean
   only_created_key_groups_enabled: boolean
   /** 定时刷新只取额度、不取分组倍率；旧后端可能缺失，按 false 处理 */

@@ -24,6 +24,7 @@ const (
 	CapLoginExtraParams  Capability = "login_extra_params"
 	CapBalance           Capability = "balance"
 	CapCosts             Capability = "costs"
+	CapUsageStatsCosts   Capability = "usage_stats_costs"
 	CapRates             Capability = "rates"
 	CapAnnouncements     Capability = "announcements"
 	CapRedeem            Capability = "redeem"

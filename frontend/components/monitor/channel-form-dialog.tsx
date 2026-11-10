@@ -67,6 +67,7 @@ interface FormState {
   balance_threshold: string
   recharge_multiplier: string
   recharge_multiplier_mode: RechargeMultiplierMode
+  use_usage_stats_for_costs: boolean
   monitor_enabled: boolean
   only_created_key_groups_enabled: boolean
   skip_rates_on_auto_refresh: boolean
@@ -126,6 +127,7 @@ function initialState(c?: Channel | null): FormState {
     balance_threshold: c?.balance_threshold != null ? String(c.balance_threshold) : "0",
     recharge_multiplier: c?.recharge_multiplier != null ? String(c.recharge_multiplier) : "",
     recharge_multiplier_mode: rechargeMultiplierMode,
+    use_usage_stats_for_costs: c?.use_usage_stats_for_costs ?? false,
     monitor_enabled: c?.monitor_enabled ?? true,
     only_created_key_groups_enabled: c?.only_created_key_groups_enabled ?? false,
     skip_rates_on_auto_refresh: c?.skip_rates_on_auto_refresh ?? false,
@@ -212,6 +214,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
   const canLoginExtraParams = currentPlugin?.capabilities.includes("login_extra_params") ?? false
   const canAnnouncements = currentPlugin?.capabilities.includes("announcements") ?? false
   const canRates = currentPlugin?.capabilities.includes("rates") ?? false
+  const canUsageStatsCosts = currentPlugin?.capabilities.includes("usage_stats_costs") ?? false
 
   // 插件列表加载后：新建渠道默认选中第一个可用插件；编辑渠道回填 user_id 字段。
   useEffect(() => {
@@ -330,6 +333,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           balance_threshold: threshold,
           recharge_multiplier: rechargeMultiplier,
           recharge_multiplier_mode: form.recharge_multiplier_mode,
+          use_usage_stats_for_costs: canUsageStatsCosts && form.use_usage_stats_for_costs,
           monitor_enabled: form.monitor_enabled,
           only_created_key_groups_enabled: form.only_created_key_groups_enabled,
           skip_rates_on_auto_refresh: canRates && form.skip_rates_on_auto_refresh,
@@ -363,6 +367,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
             balance_threshold: threshold,
             recharge_multiplier: rechargeMultiplier,
             recharge_multiplier_mode: form.recharge_multiplier_mode,
+            use_usage_stats_for_costs: canUsageStatsCosts && form.use_usage_stats_for_costs,
             monitor_enabled: form.monitor_enabled,
             only_created_key_groups_enabled: form.only_created_key_groups_enabled,
             skip_rates_on_auto_refresh: canRates && form.skip_rates_on_auto_refresh,
@@ -697,6 +702,23 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
               disabled={submitting}
             />
           </div>
+
+          {canUsageStatsCosts ? (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+              <div>
+                <Label htmlFor="use-usage-stats-for-costs">通过使用记录 API 获取消费</Label>
+                <p className="text-xs text-muted-foreground">
+                  适用于消费同步报 404 的站点。今日按香港时区统计，累计按上游可用使用记录统计；继续应用充值倍率换算
+                </p>
+              </div>
+              <Switch
+                id="use-usage-stats-for-costs"
+                checked={form.use_usage_stats_for_costs}
+                onCheckedChange={(v) => setForm({ ...form, use_usage_stats_for_costs: v })}
+                disabled={submitting}
+              />
+            </div>
+          ) : null}
 
           {canRates ? (
             <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">

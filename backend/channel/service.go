@@ -164,6 +164,7 @@ type CreateInput struct {
 	BalanceThreshold       float64
 	RechargeMultiplier     *float64
 	RechargeMultiplierMode string
+	UseUsageStatsForCosts   bool
 	MonitorEnabled         bool
 	OnlyCreatedKeyGroupsEnabled bool
 	SkipRatesOnAutoRefresh bool
@@ -209,6 +210,7 @@ func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
 		BalanceThreshold:       in.BalanceThreshold,
 		RechargeMultiplier:     normalizeRechargeMultiplier(in.RechargeMultiplier),
 		RechargeMultiplierMode: connector.NormalizeRechargeMultiplierMode(in.RechargeMultiplierMode),
+		UseUsageStatsForCosts:   connector.HasCapability(connector.ChannelType(in.Type), connector.CapUsageStatsCosts) && in.UseUsageStatsForCosts,
 		MonitorEnabled:         in.MonitorEnabled,
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
 		SkipRatesOnAutoRefresh: in.SkipRatesOnAutoRefresh,
@@ -243,6 +245,7 @@ type UpdateInput struct {
 	BalanceThreshold       *float64
 	RechargeMultiplier     *float64
 	RechargeMultiplierMode *string
+	UseUsageStatsForCosts   *bool
 	MonitorEnabled         *bool
 	OnlyCreatedKeyGroupsEnabled *bool
 	SkipRatesOnAutoRefresh *bool
@@ -355,6 +358,9 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
 	}
 	if in.RechargeMultiplierMode != nil {
 		c.RechargeMultiplierMode = connector.NormalizeRechargeMultiplierMode(*in.RechargeMultiplierMode)
+	}
+	if in.UseUsageStatsForCosts != nil {
+		c.UseUsageStatsForCosts = connector.HasCapability(connector.ChannelType(c.Type), connector.CapUsageStatsCosts) && *in.UseUsageStatsForCosts
 	}
 	if in.MonitorEnabled != nil {
 		c.MonitorEnabled = *in.MonitorEnabled
@@ -505,6 +511,7 @@ func (s *Service) Resolve(ctx context.Context, c *storage.Channel) (*connector.C
 		TurnstileEnabled:       c.TurnstileEnabled,
 		RechargeMultiplier:     c.RechargeMultiplier,
 		RechargeMultiplierMode: connector.NormalizeRechargeMultiplierMode(c.RechargeMultiplierMode),
+		UseUsageStatsForCosts:   c.UseUsageStatsForCosts,
 	}
 	loginExtraParams, err := parseLoginExtraParams(c.LoginExtraParams)
 	if err != nil {

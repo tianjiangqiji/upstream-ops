@@ -73,6 +73,7 @@ type channelInput struct {
 	BalanceThreshold       float64                `json:"balance_threshold"`
 	RechargeMultiplier     *float64               `json:"recharge_multiplier"`
 	RechargeMultiplierMode string                 `json:"recharge_multiplier_mode"`
+	UseUsageStatsForCosts   bool                   `json:"use_usage_stats_for_costs"`
 	MonitorEnabled         bool                   `json:"monitor_enabled"`
 	OnlyCreatedKeyGroupsEnabled bool             `json:"only_created_key_groups_enabled"`
 	SkipRatesOnAutoRefresh bool                   `json:"skip_rates_on_auto_refresh"`
@@ -97,6 +98,7 @@ type channelUpdateInput struct {
 	BalanceThreshold       *float64                `json:"balance_threshold"`
 	RechargeMultiplier     *float64                `json:"recharge_multiplier"`
 	RechargeMultiplierMode *string                 `json:"recharge_multiplier_mode"`
+	UseUsageStatsForCosts   *bool                   `json:"use_usage_stats_for_costs"`
 	MonitorEnabled         *bool                   `json:"monitor_enabled"`
 	OnlyCreatedKeyGroupsEnabled *bool             `json:"only_created_key_groups_enabled"`
 	SkipRatesOnAutoRefresh *bool                   `json:"skip_rates_on_auto_refresh"`
@@ -201,6 +203,7 @@ func createChannel(c *gin.Context, d *Deps) {
 		BalanceThreshold:       in.BalanceThreshold,
 		RechargeMultiplier:     in.RechargeMultiplier,
 		RechargeMultiplierMode: in.RechargeMultiplierMode,
+		UseUsageStatsForCosts:   in.UseUsageStatsForCosts,
 		MonitorEnabled:         in.MonitorEnabled,
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
 		SkipRatesOnAutoRefresh: in.SkipRatesOnAutoRefresh,
@@ -353,6 +356,7 @@ func updateChannel(c *gin.Context, d *Deps) {
 		BalanceThreshold:       in.BalanceThreshold,
 		RechargeMultiplier:     in.RechargeMultiplier,
 		RechargeMultiplierMode: in.RechargeMultiplierMode,
+		UseUsageStatsForCosts:   in.UseUsageStatsForCosts,
 		MonitorEnabled:         in.MonitorEnabled,
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
 		SkipRatesOnAutoRefresh: in.SkipRatesOnAutoRefresh,
