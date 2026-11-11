@@ -1,4 +1,4 @@
 // Package global 存放构建版本等全局常量。
 package global
 
-const VERSION = "0.1.7"
+const VERSION = "0.1.8"

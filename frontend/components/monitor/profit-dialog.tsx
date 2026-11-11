@@ -343,7 +343,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
             onSave={handleSaveConfig}
           />
         ) : (
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>
@@ -389,12 +389,12 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
                         <Icon
                           className={cn("size-3.5 shrink-0", tone, pending && "animate-spin")}
                         />
-                        <span className="w-12 shrink-0 text-[11px] text-muted-foreground">
+                        <span className="w-12 shrink-0 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
                           {step.label}
                         </span>
                         <span
                           className={cn(
-                            "block min-w-0 flex-1 whitespace-pre-wrap",
+                            "block min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]",
                             failed
                               ? "text-danger"
                               : pending
@@ -421,7 +421,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
             {fatal ? (
               <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                <span className="whitespace-pre-wrap">{fatal}</span>
+                <span className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]">{fatal}</span>
               </div>
             ) : null}
 
@@ -443,7 +443,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
                         key={c.channel_id}
                         className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-background/60 px-2 py-1.5 text-xs"
                       >
-                        <span className="flex min-w-0 items-center gap-2">
+                        <span className="flex min-w-0 max-w-full items-center gap-2">
                           <span className="truncate font-medium text-foreground">
                             {c.channel_name}
                           </span>
