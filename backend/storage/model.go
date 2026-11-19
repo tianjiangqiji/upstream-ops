@@ -736,6 +736,8 @@ type ProfitSnapshot struct {
 // SiteProfit = Revenue - AdminCost，是该站点自己的收入；
 // 全局净收益再减去所有供应商渠道的今日消费（渠道成本与站点无关，只算一次）。
 // RevenueOK / AdminOK 标记该站点两个金额本轮是否取到；false 时金额沿用上一轮或按 0。
+// Sampled 标记本轮是否真的计算过这个站点：false 表示快照里压根没有它的明细
+// （比如刚从旧版本升级、当天快照还是单站点格式），此时不能当成"采集失败"。
 type ProfitSiteProfit struct {
 	SiteID     uint    `json:"site_id"`
 	SiteName   string  `json:"site_name"`
@@ -747,6 +749,8 @@ type ProfitSiteProfit struct {
 	AdminOK    bool    `json:"admin_ok"`
 	// Error 记录本轮该站点整体不可用的原因（连接器构造失败等）。
 	Error string `json:"error,omitempty"`
+	// Sampled 本轮是否计算过该站点；false 时金额是占位 0，界面上应显示"本轮未计算"。
+	Sampled bool `json:"sampled"`
 }
 
 func (ProfitSnapshot) TableName() string { return "profit_snapshots" }

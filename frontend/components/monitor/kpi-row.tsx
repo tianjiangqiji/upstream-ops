@@ -69,6 +69,7 @@ export function KpiRow() {
   // 自有站点可以有多个，卡片脚注带上站点数与失败数，明细在弹窗里逐站点列出。
   const profitSiteCount = profitData?.site_count ?? 0
   const profitSiteFailed = profitData?.site_failed ?? 0
+  const profitSitePending = profitData?.site_pending ?? 0
   let profitFooter = "点击更新今日收益"
   if (profitData?.running) {
     profitFooter = "正在更新…"
@@ -77,7 +78,8 @@ export function KpiRow() {
   } else if (profitReady) {
     const sitesPart = profitSiteCount > 0 ? `${profitSiteCount} 个站点 · ` : ""
     const failedPart = profitSiteFailed > 0 ? `${profitSiteFailed} 个失败 · ` : ""
-    profitFooter = `${sitesPart}${failedPart}更新于 ${relativeTime(profitData?.sampled_at)}`
+    const pendingPart = profitSitePending > 0 ? `${profitSitePending} 个待更新 · ` : ""
+    profitFooter = `${sitesPart}${failedPart}${pendingPart}更新于 ${relativeTime(profitData?.sampled_at)}`
   }
 
   const kpis: Kpi[] = [

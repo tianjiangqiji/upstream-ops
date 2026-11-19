@@ -316,9 +316,11 @@ type Summary struct {
 	Configured bool `json:"configured"`
 	Enabled    bool `json:"enabled"`
 	// SiteURL 第一个启用站点的地址，兼容只展示单站的旧视图。
-	SiteURL       string  `json:"site_url"`
-	SiteCount     int     `json:"site_count"`
-	SiteFailed    int     `json:"site_failed"`
+	SiteURL    string `json:"site_url"`
+	SiteCount  int    `json:"site_count"`
+	SiteFailed int    `json:"site_failed"`
+	// SitePending 快照里还没有明细的站点数（刚添加或刚升级，需要点一次更新）。
+	SitePending   int     `json:"site_pending"`
 	Day           string  `json:"day"`
 	HasSnapshot   bool    `json:"has_snapshot"`
 	Revenue       float64 `json:"revenue"`
@@ -378,8 +380,23 @@ func (s *Service) Summary() (*Summary, error) {
 	out.Channels = storage.DecodeProfitChannels(snap.ChannelsJSON)
 	out.Sites = mergeSiteProfits(sites, storage.DecodeProfitSites(snap.SiteProfitsJSON))
 	out.SiteCount = len(out.Sites)
+	// 只有一个站点时，旧快照（0.1.9 之前写的，没有站点明细）的顶层金额就是该站点的金额，
+	// 直接回填，升级后不必再点一次更新。多站点无法拆分，只能等下一轮。
+	if len(out.Sites) == 1 && !out.Sites[0].Sampled && (snap.RevenueOK || snap.AdminOK) {
+		p := &out.Sites[0]
+		p.Revenue, p.RevenueOK = snap.Revenue, snap.RevenueOK
+		p.AdminCost, p.AdminOK = snap.AdminCost, snap.AdminOK
+		p.SiteProfit = round4(p.Revenue - p.AdminCost)
+		p.Sampled = true
+	}
 	for i := range out.Sites {
-		if siteFailedResult(&out.Sites[i]) {
+		p := &out.Sites[i]
+		if !p.Sampled {
+			// 快照里没有这个站点的明细（刚添加、或刚从旧版升级），不能算采集失败。
+			out.SitePending++
+			continue
+		}
+		if siteFailedResult(p) {
 			out.SiteFailed++
 		}
 	}
@@ -449,18 +466,22 @@ func (s *Service) run(ctx context.Context, retryIDs []uint) (*Summary, error) {
 	base := progress.FromContext(ctx)
 	siteProfits := make([]storage.ProfitSiteProfit, 0, len(sites))
 	siteFailed := 0
+	sitePending := 0
 	var revenueTotal, adminTotal float64
 	revenueAllOK, adminAllOK := true, true
 
 	for i := range sites {
 		site := &sites[i]
-		out := storage.ProfitSiteProfit{SiteID: site.ID, SiteName: siteDisplayName(site), SiteURL: site.SiteURL}
+		// Sampled 表示"本轮确实算过这个站点"，与"金额是否取到"是两件事：
+		// 连接失败也算算过（所以计入失败），但快照里压根没有明细的站点不能算失败。
+		out := storage.ProfitSiteProfit{SiteID: site.ID, SiteName: siteDisplayName(site), SiteURL: site.SiteURL, Sampled: true}
 		previous, hasPrev := prevSites[site.ID]
 
 		if reuseSites {
 			out.Revenue, out.AdminCost = previous.Revenue, previous.AdminCost
 			out.RevenueOK, out.AdminOK = previous.RevenueOK, previous.AdminOK
 			out.Error = previous.Error
+			out.Sampled = hasPrev
 			if hasPrev {
 				progress.OK(ctx, progress.StageRevenue, fmt.Sprintf("%s：沿用本轮总收益 %0.4f", out.SiteName, out.Revenue))
 				progress.OK(ctx, progress.StageAdminCost, fmt.Sprintf("%s：沿用本轮管理员消费 %0.4f", out.SiteName, out.AdminCost))
@@ -470,7 +491,10 @@ func (s *Service) run(ctx context.Context, retryIDs []uint) (*Summary, error) {
 			adminTotal += out.AdminCost
 			revenueAllOK = revenueAllOK && out.RevenueOK
 			adminAllOK = adminAllOK && out.AdminOK
-			if siteFailedResult(&out) {
+			if !out.Sampled {
+				// 上一轮快照里没有这个站点（重试时刚加的），本轮没算过，不能算失败。
+				sitePending++
+			} else if siteFailedResult(&out) {
 				siteFailed++
 			}
 			siteProfits = append(siteProfits, out)
@@ -664,6 +688,7 @@ func (s *Service) run(ctx context.Context, retryIDs []uint) (*Summary, error) {
 		SiteURL:        sites[0].SiteURL,
 		SiteCount:      len(siteProfits),
 		SiteFailed:     siteFailed,
+		SitePending:    sitePending,
 		Day:            day,
 		HasSnapshot:    true,
 		Revenue:        revenue,
@@ -832,6 +857,9 @@ func mergeSiteProfits(current []storage.ProfitSite, stored []storage.ProfitSiteP
 		p, ok := byID[site.ID]
 		if !ok {
 			p = storage.ProfitSiteProfit{SiteID: site.ID}
+		} else if !p.Sampled && (p.RevenueOK || p.AdminOK) {
+			// 0.1.9 及更早的快照没有 sampled 字段，用金额标记反推：取到过就算算过。
+			p.Sampled = true
 		}
 		p.SiteName = siteDisplayName(site)
 		p.SiteURL = site.SiteURL

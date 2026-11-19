@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
+  Info,
   Loader2,
   Plus,
   RefreshCw,
@@ -203,10 +204,16 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
     [summary],
   )
 
+  // 只有「本轮真的算过、但金额没取到」才算失败；sampled=false 是快照里还没这个站点的
+  // 明细（刚添加 / 刚从旧版升级），属于还没跑，不能当成采集失败去让用户改凭据。
   const failedSites = useMemo(() => {
     return (summary?.sites ?? []).filter(
-      (s) => s.error != null || !s.revenue_ok || !s.admin_ok,
+      (s) => s.sampled && (s.error != null || !s.revenue_ok || !s.admin_ok),
     )
+  }, [summary])
+
+  const pendingSites = useMemo(() => {
+    return (summary?.sites ?? []).filter((s) => !s.sampled)
   }, [summary])
 
   const channelByID = useMemo(() => {
@@ -407,7 +414,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
                       <span className="flex min-w-0 max-w-full items-center gap-2">
                         <span className="truncate font-medium text-foreground">{s.site_name}</span>
                         <span className="shrink-0 text-muted-foreground">
-                          {s.error ?? "金额不完整"}
+                          {siteFailReason(s)}
                         </span>
                       </span>
                       <Button
@@ -423,6 +430,15 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
                     </li>
                   ))}
                 </ul>
+              </div>
+            ) : null}
+
+            {pendingSites.length > 0 ? (
+              <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                <Info className="mt-0.5 size-3.5 shrink-0" />
+                <span className="min-w-0">
+                  {`${pendingSites.map((s) => s.site_name).join("、")} 还没有收益明细（刚添加或刚升级），再更新一次就会计入。`}
+                </span>
               </div>
             ) : null}
 
@@ -542,7 +558,7 @@ function ProfitResultPanel({ summary }: { summary: ProfitSummary }) {
     <div className="space-y-1.5 rounded-lg border border-border bg-background px-3 py-2.5">
       <ResultRow
         operator=""
-        label={`总收益（${sites.length} 个站点）`}
+        label={`总收益（${sites.filter((s) => s.sampled).length} 个站点）`}
         value={money(summary.revenue, { precise: true })}
         warning={!summary.revenue_ok}
       />
@@ -584,9 +600,17 @@ function ProfitResultPanel({ summary }: { summary: ProfitSummary }) {
   )
 }
 
+/** 站点失败原因：优先用后端给的错误，其次按缺了哪一项具体说明。 */
+function siteFailReason(site: ProfitSiteProfit): string {
+  if (site.error) return site.error
+  if (!site.revenue_ok && !site.admin_ok) return "今日总收益与管理员消费都没取到"
+  if (!site.revenue_ok) return "今日总收益没取到"
+  return "管理员消费没取到"
+}
+
 /** 单个站点的收益行：站点名 + 站点收益，副行给出总收益与管理员消费。 */
 function SiteProfitRow({ site }: { site: ProfitSiteProfit }) {
-  const failed = site.error != null || !site.revenue_ok || !site.admin_ok
+  const failed = site.sampled && (site.error != null || !site.revenue_ok || !site.admin_ok)
   const positive = site.site_profit >= 0
   return (
     <li className="flex items-start justify-between gap-2 text-xs">
@@ -596,17 +620,23 @@ function SiteProfitRow({ site }: { site: ProfitSiteProfit }) {
           {failed ? <AlertTriangle className="size-3 shrink-0 text-warning" /> : null}
         </span>
         <span className="block truncate text-[11px] text-muted-foreground">
-          {`收入 ${money(site.revenue, { precise: true })} − 管理员 ${money(site.admin_cost, { precise: true })}`}
+          {site.sampled
+            ? `收入 ${money(site.revenue, { precise: true })} − 管理员 ${money(site.admin_cost, { precise: true })}`
+            : "本轮未计算"}
         </span>
       </span>
-      <span
-        className={cn(
-          "shrink-0 tabular-nums font-medium",
-          positive ? "text-success" : "text-danger",
-        )}
-      >
-        {money(site.site_profit, { precise: true })}
-      </span>
+      {site.sampled ? (
+        <span
+          className={cn(
+            "shrink-0 tabular-nums font-medium",
+            positive ? "text-success" : "text-danger",
+          )}
+        >
+          {money(site.site_profit, { precise: true })}
+        </span>
+      ) : (
+        <span className="shrink-0 text-muted-foreground">{"待更新"}</span>
+      )}
     </li>
   )
 }

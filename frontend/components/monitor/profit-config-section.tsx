@@ -172,8 +172,12 @@ export function ProfitConfigSection() {
           {sites.map((site) => {
             const ready = site.configured && site.enabled
             const profit = profits.get(site.id)
+            // 快照里还没有这个站点的明细时（刚添加或刚升级），不算失败，显示待更新。
+            const profitSampled = profit?.sampled ?? false
             const profitFailed =
-              profit != null && (profit.error != null || !profit.revenue_ok || !profit.admin_ok)
+              profitSampled &&
+              profit != null &&
+              (profit.error != null || !profit.revenue_ok || !profit.admin_ok)
             return (
               <li
                 key={site.id}
@@ -208,7 +212,12 @@ export function ProfitConfigSection() {
                       {site.user_id ? ` · 管理员 ID ${site.user_id}` : ""}
                       {site.sort_order !== 0 ? ` · 排序 ${site.sort_order}` : ""}
                     </p>
-                    {hasSnapshot && profit ? (
+                    {hasSnapshot && profit && !profitSampled ? (
+                      <p className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                        {"待更新：再更新一次即可计入"}
+                      </p>
+                    ) : null}
+                    {hasSnapshot && profit && profitSampled ? (
                       <p className="flex flex-wrap items-center gap-1.5 text-[11px]">
                         <span
                           className={cn(

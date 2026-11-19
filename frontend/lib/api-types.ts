@@ -1024,6 +1024,8 @@ export interface ProfitSiteProfit {
   admin_ok: boolean
   /** 本轮该站点整体不可用的原因（连接失败等） */
   error?: string
+  /** 本轮是否真的计算过该站点；false 表示快照里还没有它的明细（刚添加 / 刚升级），金额是占位 0 */
+  sampled: boolean
 }
 
 /**
@@ -1051,6 +1053,8 @@ export interface ProfitSummary {
   site_url: string
   /** 参与计算的启用站点数 */
   site_count: number
+  /** 快照里还没有明细的站点数（刚添加或刚升级，需要点一次更新） */
+  site_pending: number
   /** 本轮采集失败的站点数 */
   site_failed: number
   day: string

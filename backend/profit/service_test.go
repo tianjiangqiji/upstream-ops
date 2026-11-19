@@ -251,6 +251,9 @@ func TestRefreshAggregatesMultipleSites(t *testing.T) {
 	if got.SiteFailed != 0 {
 		t.Fatalf("site failed = %d, want 0", got.SiteFailed)
 	}
+	if got.SitePending != 0 {
+		t.Fatalf("site pending = %d, want 0", got.SitePending)
+	}
 }
 
 // TestRefreshKeepsOtherSitesWhenOneFails 单个站点失败不影响其它站点，也不阻断渠道计算。
@@ -472,6 +475,121 @@ func TestSummaryWithoutSnapshot(t *testing.T) {
 	}
 	if len(summary.Sites) != 1 || summary.Sites[0].SiteProfit != 0 {
 		t.Fatalf("sites = %+v, want 一条零值站点", summary.Sites)
+	}
+}
+
+// TestSummaryTreatsUnsampledSiteAsPending 多站点时快照里没有站点明细（刚加站点、或刚从单主站版本升级），
+// 无法把顶层金额拆到各站点，不能算采集失败，应计入待更新。
+func TestSummaryTreatsUnsampledSiteAsPending(t *testing.T) {
+	first := newSiteStub(t)
+	second := newSiteStub(t)
+	svc, sites, snapshots, _ := newTestService(t, &stubRefresher{})
+	addSite(t, svc, sites, "一号站", first.server.URL)
+	addSite(t, svc, sites, "二号站", second.server.URL)
+
+	// 旧版只写顶层金额，没有 SiteProfitsJSON。
+	if err := snapshots.Create(&storage.ProfitSnapshot{
+		Day:       dayKey(time.Now()),
+		Revenue:   100,
+		AdminCost: 1,
+		NetProfit: 99,
+		RevenueOK: true,
+		AdminOK:   true,
+		ChannelOK: 1,
+	}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	summary, err := svc.Summary()
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if summary.SiteFailed != 0 {
+		t.Fatalf("site failed = %d, want 0", summary.SiteFailed)
+	}
+	if summary.SitePending != 2 {
+		t.Fatalf("site pending = %d, want 2", summary.SitePending)
+	}
+	if len(summary.Sites) != 2 {
+		t.Fatalf("sites = %d, want 2", len(summary.Sites))
+	}
+	for _, p := range summary.Sites {
+		if p.Sampled {
+			t.Fatalf("sampled = true, want false: %+v", p)
+		}
+	}
+}
+
+// TestSummaryInfersSampledFromLegacyDetail 0.1.9 的站点明细没有 sampled 字段，
+// 只要金额标记为已取到，就应反推为已计算。
+func TestSummaryInfersSampledFromLegacyDetail(t *testing.T) {
+	site := newSiteStub(t)
+	svc, sites, snapshots, _ := newTestService(t, &stubRefresher{})
+	created := addSite(t, svc, sites, "主站", site.server.URL)
+
+	legacy := storage.EncodeProfitSites([]storage.ProfitSiteProfit{{
+		SiteID:     created.ID,
+		SiteName:   "主站",
+		Revenue:    20,
+		AdminCost:  2,
+		SiteProfit: 18,
+		RevenueOK:  true,
+		AdminOK:    true,
+	}})
+	if err := snapshots.Create(&storage.ProfitSnapshot{
+		Day:             dayKey(time.Now()),
+		Revenue:         20,
+		AdminCost:       2,
+		NetProfit:       18,
+		RevenueOK:       true,
+		AdminOK:         true,
+		ChannelOK:       1,
+		SiteProfitsJSON: legacy,
+	}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	summary, err := svc.Summary()
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if !summary.Sites[0].Sampled {
+		t.Fatalf("sampled = false, want true（旧快照应反推为已计算）")
+	}
+	if summary.SiteFailed != 0 || summary.SitePending != 0 {
+		t.Fatalf("failed = %d, pending = %d, want 0/0", summary.SiteFailed, summary.SitePending)
+	}
+}
+
+// TestSummaryBackfillsSingleSiteFromLegacySnapshot 只有一个站点时，旧快照的顶层金额就是它的金额，
+// 升级后应直接回填，不必再点一次更新。
+func TestSummaryBackfillsSingleSiteFromLegacySnapshot(t *testing.T) {
+	site := newSiteStub(t)
+	svc, sites, snapshots, _ := newTestService(t, &stubRefresher{})
+	addSite(t, svc, sites, "主站", site.server.URL)
+
+	if err := snapshots.Create(&storage.ProfitSnapshot{
+		Day:       dayKey(time.Now()),
+		Revenue:   30,
+		AdminCost: 3,
+		NetProfit: 27,
+		RevenueOK: true,
+		AdminOK:   true,
+		ChannelOK: 1,
+	}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	summary, err := svc.Summary()
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	p := summary.Sites[0]
+	if !p.Sampled || p.Revenue != 30 || p.AdminCost != 3 || p.SiteProfit != 27 {
+		t.Fatalf("site = %+v, want 回填 30/3/27", p)
+	}
+	if summary.SiteFailed != 0 || summary.SitePending != 0 {
+		t.Fatalf("failed = %d, pending = %d, want 0/0", summary.SiteFailed, summary.SitePending)
 	}
 }
 
