@@ -107,6 +107,7 @@ func main() {
 	gatewayUsage := storage.NewGatewayUsageLogs(db)
 	modelPrices := storage.NewModelPriceOverrides(db)
 	profitSettings := storage.NewProfitSettings(db)
+	profitSites := storage.NewProfitSites(db)
 	profitSnapshots := storage.NewProfitSnapshots(db)
 
 	channelSvc := channel.NewService(channels, authSessions, captchas, rates, monLogs, cipher)
@@ -132,7 +133,7 @@ func main() {
 	})
 	dispatcher.UpdateProxyConfig(cfg.Proxy)
 	monitorSvc := monitor.NewService(channels, announcements, rates, monLogs, channelSvc, dispatcher, log)
-	profitSvc := profit.NewService(profitSettings, profitSnapshots, channels, monitorSvc, channelSvc, cipher, log)
+	profitSvc := profit.NewService(profitSettings, profitSites, profitSnapshots, channels, monitorSvc, channelSvc, cipher, log)
 
 	schedulerFactory := func(scfg config.SchedulerConfig, pcfg config.ProxyConfig) *scheduler.Scheduler {
 		return scheduler.New(scfg, monitorSvc, monLogs, rates, notifies, announcements, captchas, cipher, gatewaySvc, pcfg, log)

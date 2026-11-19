@@ -16,7 +16,8 @@ func TestRetryKeepsSuccessfulChannelsOutOfFailureList(t *testing.T) {
 	site.revenue = 10
 	site.adminCost = 1
 	fail := map[string]error{"broken": errors.New("登录失败")}
-	svc, _, _, channels := newTestService(t, site.server.URL, &stubRefresher{fail: fail})
+	svc, sites, _, channels := newTestService(t, &stubRefresher{fail: fail})
+	addSite(t, svc, sites, "主站", site.server.URL)
 
 	names := []string{"ok1", "ok2", "broken"}
 	for _, name := range names {
@@ -64,7 +65,8 @@ func TestRetryKeepsUnfixedFailure(t *testing.T) {
 	site.revenue = 10
 	site.adminCost = 1
 	fail := map[string]error{"broken": errors.New("登录失败")}
-	svc, _, _, channels := newTestService(t, site.server.URL, &stubRefresher{fail: fail})
+	svc, sites, _, channels := newTestService(t, &stubRefresher{fail: fail})
+	addSite(t, svc, sites, "主站", site.server.URL)
 
 	for _, name := range []string{"ok", "broken"} {
 		if err := channels.Create(&storage.Channel{Name: name, Type: storage.ChannelTypeNewAPI, SiteURL: "https://" + name + ".example.com", PasswordCipher: "x"}); err != nil {

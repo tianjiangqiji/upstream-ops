@@ -66,13 +66,18 @@ export function KpiRow() {
   const profitReady = profitData?.has_snapshot ?? false
   const profitValue = profitReady ? money(profitData?.net_profit, { precise: true }) : "—"
   const profitPositive = (profitData?.net_profit ?? 0) >= 0
+  // 自有站点可以有多个，卡片脚注带上站点数与失败数，明细在弹窗里逐站点列出。
+  const profitSiteCount = profitData?.site_count ?? 0
+  const profitSiteFailed = profitData?.site_failed ?? 0
   let profitFooter = "点击更新今日收益"
   if (profitData?.running) {
     profitFooter = "正在更新…"
   } else if (!profitData?.configured) {
-    profitFooter = "点击配置主站并更新"
+    profitFooter = "点击添加站点并更新"
   } else if (profitReady) {
-    profitFooter = `更新于 ${relativeTime(profitData?.sampled_at)}`
+    const sitesPart = profitSiteCount > 0 ? `${profitSiteCount} 个站点 · ` : ""
+    const failedPart = profitSiteFailed > 0 ? `${profitSiteFailed} 个失败 · ` : ""
+    profitFooter = `${sitesPart}${failedPart}更新于 ${relativeTime(profitData?.sampled_at)}`
   }
 
   const kpis: Kpi[] = [

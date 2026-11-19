@@ -18,6 +18,7 @@ import type {
   GatewayUsageStats,
   NotificationChannel,
   NotificationLogPage,
+  ProfitConfig,
   ProfitSummary,
   RateChangeLogPage,
   RateSnapshot,
@@ -406,4 +407,9 @@ export function useSystemConfig() {
  */
 export function useProfitSummary() {
   return useApi<ProfitSummary>("/profit/summary")
+}
+
+/** 收益统计的全局开关与自有站点列表（凭据只回 has_token / has_cookie）。 */
+export function useProfitConfig() {
+  return useApi<ProfitConfig>("/profit/config")
 }

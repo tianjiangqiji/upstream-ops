@@ -29,15 +29,18 @@ const (
 
 // Event 一条进度事件。OK 三态：nil = 进行中，true = 成功，false = 失败。
 type Event struct {
-	Stage       Stage     `json:"stage"`
-	Message     string    `json:"message"`
-	OK          *bool     `json:"ok,omitempty"`
-	Data        any       `json:"data,omitempty"`
-	Time        time.Time `json:"time"`
-	ChannelID   uint      `json:"channel_id,omitempty"`
-	ChannelName string    `json:"channel_name,omitempty"`
-	Index       int       `json:"index,omitempty"`
-	Total       int       `json:"total,omitempty"`
+	Stage   Stage     `json:"stage"`
+	Message string    `json:"message"`
+	OK      *bool     `json:"ok,omitempty"`
+	Data    any       `json:"data,omitempty"`
+	Time    time.Time `json:"time"`
+	// SiteID / SiteName 用于「自有站点」维度的进度事件（收益统计按站点分行展示）。
+	SiteID      uint   `json:"site_id,omitempty"`
+	SiteName    string `json:"site_name,omitempty"`
+	ChannelID   uint   `json:"channel_id,omitempty"`
+	ChannelName string `json:"channel_name,omitempty"`
+	Index       int    `json:"index,omitempty"`
+	Total       int    `json:"total,omitempty"`
 }
 
 // Observer 消费进度事件。

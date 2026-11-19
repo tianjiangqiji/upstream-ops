@@ -56,7 +56,7 @@ type Channel struct {
 	BalanceThreshold       float64        `gorm:"default:0" json:"balance_threshold"`
 	RechargeMultiplier     *float64       `json:"recharge_multiplier,omitempty"`
 	RechargeMultiplierMode string         `gorm:"size:16;not null;default:'divide'" json:"recharge_multiplier_mode"`
-	UseUsageStatsForCosts   bool           `gorm:"not null;default:false" json:"use_usage_stats_for_costs"`
+	UseUsageStatsForCosts  bool           `gorm:"not null;default:false" json:"use_usage_stats_for_costs"`
 	MonitorEnabled         bool           `gorm:"default:true" json:"monitor_enabled"`
 	// OnlyCreatedKeyGroupsEnabled 开启后仅展示与监听"已创建密钥的分组"。
 	// 影响：渠道卡片 / 分组对话框 / 全局倍率面板的分组列表，以及倍率变动通知。
@@ -268,19 +268,19 @@ func (NotificationChannel) TableName() string { return "notification_channels" }
 type NotificationEvent string
 
 const (
-	EventBalanceLow                     NotificationEvent = "balance_low"
-	EventRateChanged                    NotificationEvent = "rate_changed"
-	EventRateStructureChanged           NotificationEvent = "rate_structure_changed"
-	EventRateAdded                      NotificationEvent = "rate_added"
-	EventRateRemoved                    NotificationEvent = "rate_removed"
-	EventAnnouncement                   NotificationEvent = "announcement"
-	EventLoginFailed                    NotificationEvent = "login_failed"
-	EventCaptchaFailed                  NotificationEvent = "captcha_failed"
-	EventMonitorFailed                  NotificationEvent = "monitor_failed"
-	EventSubscriptionDailyLow           NotificationEvent = "subscription_daily_remaining_low"
-	EventSubscriptionWeeklyLow          NotificationEvent = "subscription_weekly_remaining_low"
-	EventSubscriptionMonthlyLow         NotificationEvent = "subscription_monthly_remaining_low"
-	EventSubscriptionExpiring           NotificationEvent = "subscription_expiring"
+	EventBalanceLow             NotificationEvent = "balance_low"
+	EventRateChanged            NotificationEvent = "rate_changed"
+	EventRateStructureChanged   NotificationEvent = "rate_structure_changed"
+	EventRateAdded              NotificationEvent = "rate_added"
+	EventRateRemoved            NotificationEvent = "rate_removed"
+	EventAnnouncement           NotificationEvent = "announcement"
+	EventLoginFailed            NotificationEvent = "login_failed"
+	EventCaptchaFailed          NotificationEvent = "captcha_failed"
+	EventMonitorFailed          NotificationEvent = "monitor_failed"
+	EventSubscriptionDailyLow   NotificationEvent = "subscription_daily_remaining_low"
+	EventSubscriptionWeeklyLow  NotificationEvent = "subscription_weekly_remaining_low"
+	EventSubscriptionMonthlyLow NotificationEvent = "subscription_monthly_remaining_low"
+	EventSubscriptionExpiring   NotificationEvent = "subscription_expiring"
 )
 
 // NotificationLog 通知发送记录。
@@ -664,6 +664,28 @@ type ProfitSetting struct {
 
 func (ProfitSetting) TableName() string { return "profit_settings" }
 
+// ProfitSite 收益统计使用的「管理员自有站点」，可以配置多个。
+//
+// 每个站点各自拉取总收益与管理员消费，站点收益 = 总收益 - 管理员消费；
+// 全局净收益再减去所有供应商渠道的今日消费（渠道成本与站点无关，只算一次）。
+// 收益统计只支持 NewAPI 系站点：/api/log/stat 与 /api/log/self/stat 是它的管理接口，
+// 需要站点管理员权限。凭据与渠道一致走 AES-GCM 加密，明文不出库、不出 API。
+type ProfitSite struct {
+	ID                uint                 `gorm:"primaryKey" json:"id"`
+	Name              string               `gorm:"size:64;not null;default:''" json:"name"`
+	SiteURL           string               `gorm:"size:512;not null;default:''" json:"site_url"`
+	CredentialMode    ProfitCredentialMode `gorm:"size:16;not null;default:'token'" json:"credential_mode"`
+	AccessTokenCipher string               `gorm:"type:text" json:"-"`
+	CookieCipher      string               `gorm:"type:text" json:"-"`
+	UserID            string               `gorm:"size:64;not null;default:''" json:"user_id"`
+	Enabled           bool                 `gorm:"not null;default:true" json:"enabled"`
+	SortOrder         int                  `gorm:"not null;default:0" json:"sort_order"`
+	CreatedAt         time.Time            `json:"created_at"`
+	UpdatedAt         time.Time            `json:"updated_at"`
+}
+
+func (ProfitSite) TableName() string { return "profit_sites" }
+
 // ProfitChannelCost 一次收益更新里单个渠道的成本明细。
 //
 // Source 说明这笔金额从哪来：
@@ -687,12 +709,12 @@ type ProfitChannelCost struct {
 // 顶部卡片不做实时计算（要拉主站和全部渠道，耗时且有失败面），只读当天最新一条；
 // 每次更新都追加新行，同一天多次更新保留历史，LatestForDay 取 sampled_at 最新的一条。
 type ProfitSnapshot struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	Day        string    `gorm:"size:10;not null;index" json:"day"`
-	Revenue    float64   `gorm:"not null;default:0" json:"revenue"`
-	AdminCost  float64   `gorm:"not null;default:0" json:"admin_cost"`
-	ChannelCost float64  `gorm:"not null;default:0" json:"channel_cost"`
-	NetProfit  float64   `gorm:"not null;default:0" json:"net_profit"`
+	ID          uint    `gorm:"primaryKey" json:"id"`
+	Day         string  `gorm:"size:10;not null;index" json:"day"`
+	Revenue     float64 `gorm:"not null;default:0" json:"revenue"`
+	AdminCost   float64 `gorm:"not null;default:0" json:"admin_cost"`
+	ChannelCost float64 `gorm:"not null;default:0" json:"channel_cost"`
+	NetProfit   float64 `gorm:"not null;default:0" json:"net_profit"`
 	// RevenueOK / AdminOK 标记两个主站口径是否本轮取到；false 时对应金额沿用上次或按 0。
 	RevenueOK bool `gorm:"not null;default:false" json:"revenue_ok"`
 	AdminOK   bool `gorm:"not null;default:false" json:"admin_ok"`
@@ -702,8 +724,29 @@ type ProfitSnapshot struct {
 	ChannelOK     int `gorm:"not null;default:0" json:"channel_ok"`
 	ChannelFailed int `gorm:"not null;default:0" json:"channel_failed"`
 	// ChannelsJSON 保存 []ProfitChannelCost，用于弹窗展示失败项与重试后的沿用计算。
-	ChannelsJSON string    `gorm:"type:text;not null;default:''" json:"-"`
-	SampledAt    time.Time `gorm:"not null;index" json:"sampled_at"`
+	ChannelsJSON string `gorm:"type:text;not null;default:''" json:"-"`
+	// SiteProfitsJSON 保存 []ProfitSiteProfit：本轮每个自有站点各自的总收益 / 管理员消费 /
+	// 站点收益。顶层 Revenue / AdminCost 是所有启用站点的合计，NetProfit 再减去渠道成本。
+	SiteProfitsJSON string    `gorm:"type:text;not null;default:''" json:"-"`
+	SampledAt       time.Time `gorm:"not null;index" json:"sampled_at"`
+}
+
+// ProfitSiteProfit 一次收益更新里单个自有站点的结果。
+//
+// SiteProfit = Revenue - AdminCost，是该站点自己的收入；
+// 全局净收益再减去所有供应商渠道的今日消费（渠道成本与站点无关，只算一次）。
+// RevenueOK / AdminOK 标记该站点两个金额本轮是否取到；false 时金额沿用上一轮或按 0。
+type ProfitSiteProfit struct {
+	SiteID     uint    `json:"site_id"`
+	SiteName   string  `json:"site_name"`
+	SiteURL    string  `json:"site_url"`
+	Revenue    float64 `json:"revenue"`
+	AdminCost  float64 `json:"admin_cost"`
+	SiteProfit float64 `json:"site_profit"`
+	RevenueOK  bool    `json:"revenue_ok"`
+	AdminOK    bool    `json:"admin_ok"`
+	// Error 记录本轮该站点整体不可用的原因（连接器构造失败等）。
+	Error string `json:"error,omitempty"`
 }
 
 func (ProfitSnapshot) TableName() string { return "profit_snapshots" }

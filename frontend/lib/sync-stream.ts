@@ -23,6 +23,9 @@ export interface ProgressEvent {
   ok?: boolean
   data?: unknown
   time: string
+  /** 自有站点维度的步骤（总收益 / 管理员消费）带上站点标识 */
+  site_id?: number
+  site_name?: string
   channel_id?: number
   channel_name?: string
   index?: number

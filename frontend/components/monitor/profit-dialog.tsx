@@ -5,14 +5,15 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  Plus,
   RefreshCw,
   Settings2,
   TrendingUp,
   XCircle,
 } from "lucide-react"
-import { toast } from "sonner"
 
 import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
+import { ProfitSiteDialog } from "@/components/monitor/profit-site-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -21,29 +22,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { apiFetch } from "@/lib/api"
 import { money, relativeTime } from "@/lib/format"
-import { useApi, useChannels, useProfitSummary } from "@/lib/queries"
+import { useChannels, useProfitConfig, useProfitSummary } from "@/lib/queries"
 import { useTriggerRefresh } from "@/lib/refresh-context"
 import { refreshProfitStream, retryProfitStream } from "@/lib/sync-stream"
 import { cn } from "@/lib/utils"
-import type {
-  Channel,
-  ProfitConfig,
-  ProfitConfigInput,
-  ProfitCredentialMode,
-  ProfitSummary,
-} from "@/lib/api-types"
+import type { Channel, ProfitSite, ProfitSiteProfit, ProfitSummary } from "@/lib/api-types"
 import type { ProgressEvent, ProgressStage } from "@/lib/sync-stream"
 
 const stageLabel: Record<ProgressStage, string> = {
@@ -72,39 +57,26 @@ interface ProfitEventEntry {
 }
 
 /**
- * 步骤归并键：主站两个步骤是全局的（没有 channel_id），
- * 供应商消费步骤每个渠道一条，靠 channel_id 区分。
+ * 步骤归并键：站点步骤靠 site_id 区分（多个站点各两条），
+ * 供应商消费步骤靠 channel_id 区分，流程级事件两者都没有。
  */
 function stepKey(ev: ProgressEvent): string {
-  return `${ev.stage}#${ev.channel_id ?? 0}`
+  return `${ev.stage}#${ev.site_id ?? 0}#${ev.channel_id ?? 0}`
 }
 
 function isFinished(ev: ProgressEvent): boolean {
   return ev.ok === true || ev.ok === false || ev.stage === "done" || ev.stage === "error"
 }
 
-/** 渠道消费步骤用渠道名当标签，主站步骤用固定标签。 */
+/** 渠道消费步骤用渠道名当标签，站点步骤用「站点名·阶段」，流程级事件用固定标签。 */
 function stepLabel(ev: ProgressEvent): string {
   if (ev.channel_id != null && ev.stage === "cost") {
     return ev.channel_name?.trim() || `#${ev.channel_id}`
   }
-  return stageLabel[ev.stage] ?? "进度"
-}
-
-interface ProfitConfigDraft {
-  site_url: string
-  credential_mode: ProfitCredentialMode
-  user_id: string
-  access_token: string
-  cookie: string
-}
-
-const EMPTY_CONFIG_DRAFT: ProfitConfigDraft = {
-  site_url: "",
-  credential_mode: "token",
-  user_id: "",
-  access_token: "",
-  cookie: "",
+  const stage = stageLabel[ev.stage] ?? "进度"
+  const siteName = ev.site_name?.trim()
+  if (siteName) return `${siteName}·${stage}`
+  return stage
 }
 
 interface ProfitDialogProps {
@@ -117,14 +89,14 @@ interface ProfitDialogProps {
 /**
  * 「今日收益」更新弹窗。
  *
- * 一轮更新的完整过程都在这里可见：先拉主站总收益，再拉管理员测试消费，
- * 然后逐个供应商重新采集今日消费并累减。采集失败的供应商不会让流程中断，
+ * 一轮更新的完整过程都在这里可见：先逐站点拉总收益与管理员测试消费，
+ * 再逐个供应商重新采集今日消费并累减。采集失败的站点或供应商都不会让流程中断，
  * 而是沿用上一次成功的金额计入，同时列在下方供用户重试，
  * 或直接打开该渠道的设置修正凭据后再重试。
  */
 export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDialogProps) {
   const summaryQuery = useProfitSummary()
-  const configQuery = useApi<ProfitConfig>("/profit/config")
+  const configQuery = useProfitConfig()
   const channelsQuery = useChannels()
   const refresh = useTriggerRefresh()
 
@@ -136,8 +108,8 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
   const [fatal, setFatal] = useState<string | null>(null)
   const [channelTotal, setChannelTotal] = useState(0)
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null)
-  const [configDraft, setConfigDraft] = useState<ProfitConfigDraft>(EMPTY_CONFIG_DRAFT)
-  const [savingConfig, setSavingConfig] = useState(false)
+  const [siteDialogOpen, setSiteDialogOpen] = useState(false)
+  const [editingSite, setEditingSite] = useState<ProfitSite | null>(null)
 
   const streamRef = useRef<AbortController | null>(null)
   // 每次打开只自动跑一轮，避免轮询把 SSE 反复触发。
@@ -146,14 +118,15 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
   const configured = summary?.configured ?? false
   const enabled = summary?.enabled ?? true
   const hasSnapshot = summary?.has_snapshot ?? false
+  const siteCount = summary?.site_count ?? 0
 
   const applyEvent = useCallback((ev: ProgressEvent) => {
     if (ev.total != null) setChannelTotal(ev.total)
     const payload = ev.data as { summary?: ProfitSummary } | undefined
     if (payload?.summary) setSummary(payload.summary)
-    // 没有 channel_id 的 error 是流程级结论（含"计算完成但有渠道失败"），
+    // 没有 channel_id / site_id 的 error 是流程级结论（含"计算完成但有站点或渠道失败"），
     // 只在顶部提示条展示，不进步骤列表，避免同一条消息出现两次。
-    if (ev.stage === "error" && ev.channel_id == null) {
+    if (ev.stage === "error" && ev.channel_id == null && ev.site_id == null) {
       setFatal(ev.message)
       return
     }
@@ -213,21 +186,6 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
     if (summaryQuery.data) setSummary(summaryQuery.data)
   }, [open, abort, summaryQuery.data])
 
-  // 未配置主站时把已保存的地址/用户 ID 带进表单，凭据永远留空。
-  useEffect(() => {
-    const cfg = configQuery.data
-    if (!open || cfg == null || cfg.configured) return
-    setConfigDraft((prev) => {
-      if (prev.site_url !== "" || prev.user_id !== "") return prev
-      return {
-        ...prev,
-        site_url: cfg.site_url,
-        credential_mode: cfg.credential_mode || "token",
-        user_id: cfg.user_id,
-      }
-    })
-  }, [open, configQuery.data])
-
   // 配置好后打开弹窗即自动更新一轮。
   useEffect(() => {
     if (!open || !autoStart || autoStartedRef.current) return
@@ -244,6 +202,12 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
     () => (summary?.channels ?? []).filter((c) => c.source === "fallback" || c.source === "missing"),
     [summary],
   )
+
+  const failedSites = useMemo(() => {
+    return (summary?.sites ?? []).filter(
+      (s) => s.error != null || !s.revenue_ok || !s.admin_ok,
+    )
+  }, [summary])
 
   const channelByID = useMemo(() => {
     const map = new Map<number, Channel>()
@@ -264,49 +228,32 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
     () => stepList.filter((s) => isFinished(s.event)).length,
     [stepList],
   )
-  const expectedSteps = Math.max(3 + channelTotal, finishedCount, 1)
+  // 每个站点两条（总收益 + 管理员消费），每个渠道一条，外加流程结束事件。
+  const expectedSteps = Math.max(1 + siteCount * 2 + channelTotal, finishedCount, 1)
   const percent = Math.min(100, Math.round((finishedCount / expectedSteps) * 100))
-
-  const handleSaveConfig = useCallback(async () => {
-    setSavingConfig(true)
-    try {
-      const payload: ProfitConfigInput = {
-        site_url: configDraft.site_url.trim(),
-        credential_mode: configDraft.credential_mode,
-        user_id: configDraft.user_id.trim(),
-        enabled: true,
-      }
-      if (configDraft.credential_mode === "token") {
-        if (configDraft.access_token.trim()) payload.access_token = configDraft.access_token.trim()
-      } else if (configDraft.cookie.trim()) {
-        payload.cookie = configDraft.cookie.trim()
-      }
-      const view = await apiFetch<ProfitConfig>("/profit/config", {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      })
-      setConfigDraft(EMPTY_CONFIG_DRAFT)
-      setSummary((prev) => ({
-        ...(prev ?? EMPTY_SUMMARY),
-        configured: view.configured,
-        enabled: view.enabled,
-        site_url: view.site_url,
-      }))
-      void configQuery.refetch()
-      toast.success("主站配置已保存")
-      void run("refresh")
-    } catch (e) {
-      toast.error((e as Error).message || "保存主站配置失败")
-    } finally {
-      setSavingConfig(false)
-    }
-  }, [configDraft, run, configQuery])
 
   const handleRetry = useCallback(() => {
     const ids = failedChannels.map((c) => c.channel_id)
     if (ids.length === 0) return
     void run("retry", ids)
   }, [failedChannels, run])
+
+  /** 站点失败时直接打开该站点的编辑弹窗，改完凭据保存即可重新跑。 */
+  const openSiteEditor = useCallback(
+    (siteID: number) => {
+      const site = (configQuery.data?.sites ?? []).find((s) => s.id === siteID) ?? null
+      setEditingSite(site)
+      setSiteDialogOpen(true)
+    },
+    [configQuery.data],
+  )
+
+  const handleSiteSaved = useCallback(() => {
+    void configQuery.refetch()
+    void summaryQuery.refetch()
+    // 刚加的站点默认启用，保存后立刻跑一轮，用户不用再点一次。
+    void run("refresh")
+  }, [configQuery, summaryQuery, run])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -328,7 +275,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
             {running
               ? retrying
                 ? "正在重试失败的供应商…"
-                : "正在获取主站收益并逐个采集供应商消费…"
+                : "正在逐站点获取收益并采集供应商消费…"
               : hasSnapshot
                 ? `上次更新于 ${relativeTime(summary?.sampled_at)}，收益不是实时数据`
                 : "尚未更新过，点击下方按钮开始"}
@@ -336,12 +283,28 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
         </DialogHeader>
 
         {!configured ? (
-          <ProfitConfigForm
-            draft={configDraft}
-            onChange={setConfigDraft}
-            saving={savingConfig}
-            onSave={handleSaveConfig}
-          />
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                {"收益统计需要先添加你自己的 NewAPI 站点：站点总收益取该站日志统计，管理员消费取该站个人日志统计。可以添加多个站点，分别统计。"}
+              </span>
+            </div>
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                size="sm"
+                className="gap-1"
+                onClick={() => {
+                  setEditingSite(null)
+                  setSiteDialogOpen(true)
+                }}
+              >
+                <Plus className="size-3.5" />
+                {"添加站点"}
+              </Button>
+            </div>
+          </div>
         ) : (
           <div className="min-w-0 space-y-3">
             <div className="space-y-1.5">
@@ -351,7 +314,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
                     ? `已完成 ${finishedCount} / ${expectedSteps} 步`
                     : fatal
                       ? finishedCount > 0
-                        ? "已完成，部分供应商采集失败"
+                        ? "已完成，部分站点或供应商采集失败"
                         : "无法开始"
                       : finishedCount > 0
                         ? "本轮更新已结束"
@@ -389,7 +352,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
                         <Icon
                           className={cn("size-3.5 shrink-0", tone, pending && "animate-spin")}
                         />
-                        <span className="w-12 shrink-0 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+                        <span className="w-24 shrink-0 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
                           {step.label}
                         </span>
                         <span
@@ -426,6 +389,42 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
             ) : null}
 
             {hasSnapshot && summary ? <ProfitResultPanel summary={summary} /> : null}
+
+            {failedSites.length > 0 ? (
+              <div className="space-y-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5">
+                <div className="flex items-start gap-2 text-xs text-warning">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                  <span>
+                    {`${failedSites.length} 个站点采集失败，已按上次成功的金额计入。可以打开系统设置修正凭据后再更新。`}
+                  </span>
+                </div>
+                <ul className="space-y-1">
+                  {failedSites.map((s) => (
+                    <li
+                      key={s.site_id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-background/60 px-2 py-1.5 text-xs"
+                    >
+                      <span className="flex min-w-0 max-w-full items-center gap-2">
+                        <span className="truncate font-medium text-foreground">{s.site_name}</span>
+                        <span className="shrink-0 text-muted-foreground">
+                          {s.error ?? "金额不完整"}
+                        </span>
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 px-2 text-xs"
+                        onClick={() => openSiteEditor(s.site_id)}
+                      >
+                        <Settings2 className="size-3.5" />
+                        {"修正凭据"}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             {failedChannels.length > 0 ? (
               <div className="space-y-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5">
@@ -509,6 +508,15 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
           </div>
         ) : null}
 
+        <ProfitSiteDialog
+          open={siteDialogOpen}
+          onOpenChange={(v) => {
+            setSiteDialogOpen(v)
+            if (!v) setEditingSite(null)
+          }}
+          site={editingSite}
+          onSaved={handleSiteSaved}
+        />
         <ChannelFormDialog
           open={editingChannel != null}
           onOpenChange={(v) => {
@@ -521,108 +529,7 @@ export function ProfitDialog({ open, onOpenChange, autoStart = true }: ProfitDia
   )
 }
 
-function ProfitConfigForm({
-  draft,
-  onChange,
-  saving,
-  onSave,
-}: {
-  draft: ProfitConfigDraft
-  onChange: (next: ProfitConfigDraft) => void
-  saving: boolean
-  onSave: () => void
-}) {
-  const tokenMode = draft.credential_mode === "token"
-  const canSave =
-    draft.site_url.trim() !== "" && (tokenMode ? draft.access_token.trim() !== "" : draft.cookie.trim() !== "")
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-        <span>
-          {"收益统计需要先配置你自己的 NewAPI 主站：总收益取自主站日志统计，管理员消费取自主站个人日志统计。"}
-        </span>
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="profit-site-url" className="text-xs text-muted-foreground">
-          {"主站地址"}
-        </Label>
-        <Input
-          id="profit-site-url"
-          value={draft.site_url}
-          placeholder="https://your-newapi.example.com"
-          onChange={(e) => onChange({ ...draft, site_url: e.target.value })}
-        />
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">{"凭据模式"}</Label>
-          <Select
-            value={draft.credential_mode}
-            onValueChange={(value) =>
-              onChange({ ...draft, credential_mode: value as ProfitCredentialMode })
-            }
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="token">{"Access Token"}</SelectItem>
-              <SelectItem value="cookie">{"Cookie"}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="profit-user-id" className="text-xs text-muted-foreground">
-            {"管理员用户 ID"}
-          </Label>
-          <Input
-            id="profit-user-id"
-            value={draft.user_id}
-            placeholder="1"
-            onChange={(e) => onChange({ ...draft, user_id: e.target.value })}
-          />
-        </div>
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="profit-credential" className="text-xs text-muted-foreground">
-          {tokenMode ? "Access Token" : "Cookie"}
-        </Label>
-        <Input
-          id="profit-credential"
-          type="password"
-          value={tokenMode ? draft.access_token : draft.cookie}
-          placeholder={tokenMode ? "粘贴管理员 access token" : "粘贴管理员登录 Cookie"}
-          onChange={(e) =>
-            onChange(
-              tokenMode
-                ? { ...draft, access_token: e.target.value }
-                : { ...draft, cookie: e.target.value },
-            )
-          }
-        />
-        <p className="text-[11px] text-muted-foreground">
-          {"凭据加密保存，只用于读取主站日志统计（需要管理员权限）。"}
-        </p>
-      </div>
-      <div className="flex justify-end">
-        <Button
-          type="button"
-          size="sm"
-          className="gap-1"
-          disabled={!canSave || saving}
-          onClick={onSave}
-        >
-          {saving ? <Loader2 className="size-3.5 animate-spin" /> : null}
-          {"保存并开始"}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-/** 结果区只展示四项：总收益、管理员消费、成本、净收益。 */
+/** 结果区：先给合计四项，再逐站点列出各自的收益。 */
 function ProfitResultPanel({ summary }: { summary: ProfitSummary }) {
   const positive = summary.net_profit >= 0
   const freshCount = summary.channels.filter((c) => c.source === "fresh").length
@@ -630,11 +537,12 @@ function ProfitResultPanel({ summary }: { summary: ProfitSummary }) {
     (c) => c.source === "fallback" || c.source === "missing",
   ).length
   const carriedCount = summary.channels.length - freshCount - failedCount
+  const sites = summary.sites ?? []
   return (
     <div className="space-y-1.5 rounded-lg border border-border bg-background px-3 py-2.5">
       <ResultRow
         operator=""
-        label="总收益"
+        label={`总收益（${sites.length} 个站点）`}
         value={money(summary.revenue, { precise: true })}
         warning={!summary.revenue_ok}
       />
@@ -657,12 +565,49 @@ function ProfitResultPanel({ summary }: { summary: ProfitSummary }) {
         strong
         tone={positive ? "text-success" : "text-danger"}
       />
+      {sites.length > 0 ? (
+        <>
+          <div className="my-1 border-t border-border" />
+          <ul className="space-y-1">
+            {sites.map((s) => (
+              <SiteProfitRow key={s.site_id} site={s} />
+            ))}
+          </ul>
+        </>
+      ) : null}
       <p className="pt-1 text-[11px] text-muted-foreground">
         {`${freshCount} 个供应商本轮重新采集`}
         {carriedCount > 0 ? ` · ${carriedCount} 个本轮未采集` : ""}
         {failedCount > 0 ? ` · ${failedCount} 个采集失败` : ""}
       </p>
     </div>
+  )
+}
+
+/** 单个站点的收益行：站点名 + 站点收益，副行给出总收益与管理员消费。 */
+function SiteProfitRow({ site }: { site: ProfitSiteProfit }) {
+  const failed = site.error != null || !site.revenue_ok || !site.admin_ok
+  const positive = site.site_profit >= 0
+  return (
+    <li className="flex items-start justify-between gap-2 text-xs">
+      <span className="min-w-0">
+        <span className="flex items-center gap-1.5">
+          <span className="truncate font-medium text-foreground">{site.site_name}</span>
+          {failed ? <AlertTriangle className="size-3 shrink-0 text-warning" /> : null}
+        </span>
+        <span className="block truncate text-[11px] text-muted-foreground">
+          {`收入 ${money(site.revenue, { precise: true })} − 管理员 ${money(site.admin_cost, { precise: true })}`}
+        </span>
+      </span>
+      <span
+        className={cn(
+          "shrink-0 tabular-nums font-medium",
+          positive ? "text-success" : "text-danger",
+        )}
+      >
+        {money(site.site_profit, { precise: true })}
+      </span>
+    </li>
   )
 }
 
@@ -699,23 +644,4 @@ function ResultRow({
       </span>
     </div>
   )
-}
-
-const EMPTY_SUMMARY: ProfitSummary = {
-  configured: false,
-  enabled: false,
-  site_url: "",
-  day: "",
-  has_snapshot: false,
-  revenue: 0,
-  admin_cost: 0,
-  channel_cost: 0,
-  net_profit: 0,
-  revenue_ok: false,
-  admin_ok: false,
-  channel_ok: 0,
-  channel_failed: 0,
-  channels: [],
-  running: false,
-  snapshot_failed: 0,
 }

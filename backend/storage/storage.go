@@ -2,6 +2,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -143,11 +144,54 @@ func AutoMigrate(db *gorm.DB) error {
 		&GatewayUsageLog{},
 		&ModelPriceOverride{},
 		&ProfitSetting{},
+		&ProfitSite{},
 		&ProfitSnapshot{},
 	); err != nil {
 		return err
 	}
+	if err := migrateLegacyProfitSite(db); err != nil {
+		return err
+	}
 	return backfillChannelTodayCostAt(db)
+}
+
+// migrateLegacyProfitSite 把旧版「单主站」配置迁移成一条自有站点。
+//
+// 旧版本 profit_settings 只有一行，SiteURL + 凭据就是唯一的收益站点。
+// 多站点上线后站点存在 profit_sites 表里；这里只在 profit_sites 为空、
+// 且旧配置确实填了站点地址与凭据时复制一条，重复执行无副作用
+// （迁移后 profit_sites 非空，不会再进这个分支）。
+func migrateLegacyProfitSite(db *gorm.DB) error {
+	var sites int64
+	if err := db.Model(&ProfitSite{}).Count(&sites).Error; err != nil {
+		return fmt.Errorf("count profit sites: %w", err)
+	}
+	if sites > 0 {
+		return nil
+	}
+	var legacy ProfitSetting
+	if err := db.Where("id = ?", profitSettingID).First(&legacy).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return fmt.Errorf("load legacy profit setting: %w", err)
+	}
+	if legacy.SiteURL == "" || (legacy.AccessTokenCipher == "" && legacy.CookieCipher == "") {
+		return nil
+	}
+	site := &ProfitSite{
+		Name:              "默认站点",
+		SiteURL:           legacy.SiteURL,
+		CredentialMode:    legacy.CredentialMode,
+		AccessTokenCipher: legacy.AccessTokenCipher,
+		CookieCipher:      legacy.CookieCipher,
+		UserID:            legacy.UserID,
+		Enabled:           true,
+	}
+	if err := db.Create(site).Error; err != nil {
+		return fmt.Errorf("migrate legacy profit site: %w", err)
+	}
+	return nil
 }
 
 // backfillChannelTodayCostAt 给升级前写入的 today_cost 补上采集时间 today_cost_at。

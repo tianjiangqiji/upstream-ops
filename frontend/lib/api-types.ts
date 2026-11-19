@@ -961,35 +961,69 @@ export interface ModelDefaultPrice {
   cache_read_price_per_token: number
 }
 
-/** 主站（管理员自有站点）凭据模式：token 直连 / cookie 复用登录态 */
+/** 自有站点（管理员自己的 NewAPI）凭据模式：token 直连 / cookie 复用登录态 */
 export type ProfitCredentialMode = "token" | "cookie"
 
-/** 主站配置视图。凭据只回是否已保存，不回明文。 */
-export interface ProfitConfig {
+/** 单个自有站点的配置视图。凭据只回是否已保存，不回明文。 */
+export interface ProfitSite {
+  id: number
+  name: string
   site_url: string
   credential_mode: ProfitCredentialMode
   user_id: string
   enabled: boolean
+  sort_order: number
   has_token: boolean
   has_cookie: boolean
+  /** 地址与凭据齐备，才会参与收益计算 */
   configured: boolean
 }
 
-/** 保存主站配置的入参：凭据留空表示保留原有值 */
+/** 收益统计全局配置：一个总开关 + 若干自有站点（含停用） */
+export interface ProfitConfig {
+  enabled: boolean
+  configured: boolean
+  sites: ProfitSite[]
+}
+
+/** 保存总开关的入参 */
 export interface ProfitConfigInput {
+  enabled?: boolean
+}
+
+/** 新增 / 修改自有站点的入参：凭据留空表示保留原有值 */
+export interface ProfitSiteInput {
+  name?: string
   site_url: string
   credential_mode: ProfitCredentialMode
   user_id: string
   access_token?: string
   cookie?: string
   enabled?: boolean
+  sort_order?: number
 }
 
-export interface ProfitConfigTestResult {
+export interface ProfitSiteTestResult {
+  site_id: number
+  site_name: string
   site_url: string
   revenue: number
   duration_seconds: number
   message: string
+}
+
+/** 单个自有站点在一轮更新里的收益明细（SiteProfit = Revenue - AdminCost） */
+export interface ProfitSiteProfit {
+  site_id: number
+  site_name: string
+  site_url: string
+  revenue: number
+  admin_cost: number
+  site_profit: number
+  revenue_ok: boolean
+  admin_ok: boolean
+  /** 本轮该站点整体不可用的原因（连接失败等） */
+  error?: string
 }
 
 /**
@@ -1013,9 +1047,15 @@ export interface ProfitChannelCost {
 export interface ProfitSummary {
   configured: boolean
   enabled: boolean
+  /** 第一个启用站点的地址，仅用于兼容旧展示 */
   site_url: string
+  /** 参与计算的启用站点数 */
+  site_count: number
+  /** 本轮采集失败的站点数 */
+  site_failed: number
   day: string
   has_snapshot: boolean
+  /** 全部启用站点的合计 */
   revenue: number
   admin_cost: number
   channel_cost: number
@@ -1024,6 +1064,8 @@ export interface ProfitSummary {
   admin_ok: boolean
   channel_ok: number
   channel_failed: number
+  /** 各站点自己的收益明细，顺序与配置里的启用站点一致 */
+  sites: ProfitSiteProfit[]
   channels: ProfitChannelCost[]
   sampled_at?: string
   running: boolean
